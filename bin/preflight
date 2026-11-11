@@ -1,0 +1,705 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+/*
+ * moo-fix preflight —— 夜间修复闭环的「先验证，再动手」环节（独立 CLI，不依赖任何项目仓）。
+ *
+ * 它只做两件事，但都是闭环里最容易出错的：
+ *   1. 身份校验：读每个仓库根的 .moo-cloud.json，用该部署 env 文件里的 host token
+ *      反查云端 slug，确认「这个目录 = 这个云端项目」；再核对 git remote / 工作区 /
+ *      分支，决定今晚能不能动它。
+ *   2. 拉取队列（--fetch）：用账号级 MCP（Bearer 个人 token）拉每个项目的
+ *      runtime / slow_query / app_error 未处理项（env=production），写 _queue.json。
+ *
+ * 输出（默认 wwwroot/moo-fix-reports/<date>/）：
+ *   _preflight.json  机器可读的校验结果
+ *   _preflight.md    人读摘要
+ *   _queue.json      待处理问题（仅 --fetch）
+ *
+ * 用法（在工作区根目录执行，或显式 --root）：
+ *   php bin/preflight --offline
+ *   php bin/preflight --fetch --token=moo_pat_xxx
+ *   php bin/preflight --root=/path/to/workspace --date=2026-11-12
+ *
+ * 凭据：--token / MOO_CLOUD_MCP_TOKEN / ~/.config/moo-fleet/mcp-token 依次尝试。
+ *
+ * 退出码：有硬失败（身份对不上/目录不存在/env 缺 token/云端不可达）返回 1；
+ * 只有警告（工作区脏、在 dev/main、repo_url 未填）返回 0 —— 警告交给调用方决定是否跳过。
+ */
+
+date_default_timezone_set('Asia/Shanghai');
+
+exit(main(array_slice($argv, 1)));
+
+function main(array $args): int
+{
+    if (in_array('--help', $args, true) || in_array('-h', $args, true)) {
+        fwrite(STDOUT, <<<'TXT'
+moo-fix preflight —— 身份校验 + 拉取待处理队列
+
+用法: bin/preflight [选项]
+
+  --root=<dir>      工作区根目录（默认当前目录）
+  --date=<Y-m-d>    输出日期目录（默认上海当天）
+  --out=<dir>       输出目录（默认 <root>/moo-fix-reports/<date>）
+  --offline         跳过云端身份校验
+  --fetch           拉取 runtime / slow_query / frontend_error / app_error 队列
+  --token=<token>   账号级 MCP token（默认 MOO_CLOUD_MCP_TOKEN 或 ~/.config/moo-fleet/mcp-token）
+  --cloud=<url>     cloud 地址（默认 https://c.mooeen.com）
+  --limit=<n>       每项目每类最多拉取条数（1-50，默认 5）
+  --help            显示本帮助
+
+退出码: 0=只有告警, 1=硬失败
+
+TXT);
+
+        return 0;
+    }
+
+    $opts = parseOptions($args);
+
+    $markers = findMarkers($opts['root']);
+    if ($markers === []) {
+        fwrite(STDERR, "未找到任何 .moo-cloud.json（root={$opts['root']}）\n");
+
+        return 1;
+    }
+
+    $reports = [];
+    $hardFailures = 0;
+    $projectSet = [];
+
+    foreach ($markers as $markerPath) {
+        $report = inspectRepo($markerPath, $opts);
+        $reports[] = $report;
+        $hardFailures += $report['hard_failures'];
+
+        foreach ($report['deployments'] as $dep) {
+            if ($dep['ok']) {
+                $projectSet[$dep['project']] = true;
+            }
+        }
+    }
+
+    $outDir = $opts['out'] ?: $opts['root'].'/moo-fix-reports/'.$opts['date'];
+    if (! is_dir($outDir) && ! mkdir($outDir, 0775, true) && ! is_dir($outDir)) {
+        fwrite(STDERR, "无法创建输出目录：{$outDir}\n");
+
+        return 1;
+    }
+
+    $queue = null;
+    if ($opts['fetch']) {
+        if ($opts['token'] === '') {
+            fwrite(STDERR, "--fetch 需要账号级 token：--token=moo_pat_xxx 或环境变量 MOO_CLOUD_MCP_TOKEN\n");
+            $hardFailures++;
+        } else {
+            try {
+                $queue = fetchQueue($opts, array_keys($projectSet));
+            } catch (Throwable $e) {
+                fwrite(STDERR, '拉取队列失败：'.$e->getMessage()."\n");
+                $hardFailures++;
+            }
+        }
+    }
+
+    $payload = [
+        'generated_at' => date('c'),
+        'mode' => $opts['offline'] ? 'offline' : 'online',
+        'root' => $opts['root'],
+        'hard_failures' => $hardFailures,
+        'repos' => $reports,
+        'queue_projects' => $queue === null ? null : array_keys($queue),
+    ];
+
+    file_put_contents($outDir.'/_preflight.json', json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT)."\n");
+    file_put_contents($outDir.'/_preflight.md', renderMarkdown($payload, $queue));
+
+    if ($queue !== null) {
+        file_put_contents($outDir.'/_queue.json', json_encode([
+            'generated_at' => date('c'),
+            'projects' => $queue,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT)."\n");
+    }
+
+    fwrite(STDOUT, sprintf(
+        "preflight: %d 个仓库, 硬失败 %d, 模式 %s%s\n输出: %s\n",
+        count($reports),
+        $hardFailures,
+        $payload['mode'],
+        $opts['fetch'] ? ' + fetch' : '',
+        $outDir
+    ));
+
+    return $hardFailures > 0 ? 1 : 0;
+}
+
+/** 依次尝试环境变量与约定文件；读不到就空（--fetch 时会明确报错）。 */
+function initialToken(): string
+{
+    $env = getenv('MOO_CLOUD_MCP_TOKEN');
+    if (is_string($env) && trim($env) !== '') {
+        return trim($env);
+    }
+
+    $home = getenv('HOME') ?: '';
+    $file = $home.'/.config/moo-fleet/mcp-token';
+    if ($home !== '' && is_file($file)) {
+        return trim((string) file_get_contents($file));
+    }
+
+    return '';
+}
+
+/** @return array<string, mixed> */
+function parseOptions(array $args): array
+{
+    $opts = [
+        // 默认以当前目录为工作区根；同事在不同目录使用时不必改脚本。
+        'root' => getcwd(),
+        'date' => date('Y-m-d'),
+        'out' => null,
+        'offline' => false,
+        'fetch' => false,
+        'token' => initialToken(),
+        // 显式传入时覆盖 env / 缺省地址（本地演练、自建实例用）。
+        'cloud' => getenv('MOO_CLOUD_URL') ?: '',
+        'limit' => '5',
+    ];
+
+    foreach ($args as $arg) {
+        if (! str_starts_with($arg, '--')) {
+            fwrite(STDERR, "忽略非选项参数：{$arg}\n");
+
+            continue;
+        }
+
+        [$key, $value] = array_pad(explode('=', substr($arg, 2), 2), 2, true);
+        if (! array_key_exists($key, $opts)) {
+            fwrite(STDERR, "未知参数：--{$key}\n");
+
+            continue;
+        }
+
+        $opts[$key] = $value;
+    }
+
+    return $opts;
+}
+
+/** @return list<string> */
+function findMarkers(string $root): array
+{
+    $markers = array_merge(
+        glob($root.'/*/.moo-cloud.json') ?: [],
+        glob($root.'/*/*/.moo-cloud.json') ?: [],
+    );
+
+    sort($markers);
+
+    return $markers;
+}
+
+/**
+ * @return array<string, mixed>
+ */
+function inspectRepo(string $markerPath, array $opts): array
+{
+    $repoRoot = dirname($markerPath);
+    $raw = file_get_contents($markerPath);
+    $data = is_string($raw) ? json_decode($raw, true) : null;
+
+    $report = [
+        'repo' => $repoRoot,
+        'marker' => $markerPath,
+        'role' => null,
+        'app_root' => null,
+        'branch' => null,
+        'dirty' => null,
+        'remote' => null,
+        'deployments' => [],
+        'warnings' => [],
+        'hard_failures' => 0,
+    ];
+
+    // 软件仓（App / 桌面端 / Web）没有 artisan 和 env token，走指纹校验分支。
+    if (is_array($data) && ($data['role'] ?? 'backend') === 'app') {
+        return inspectAppRepo($markerPath, $repoRoot, $data, $report);
+    }
+
+    if (! is_array($data) || ! isset($data['deployments']) || ! is_array($data['deployments'])) {
+        $report['warnings'][] = '.moo-cloud.json 解析失败或缺 deployments';
+        $report['hard_failures']++;
+
+        return $report;
+    }
+
+    $report['role'] = $data['role'] ?? 'backend';
+    $appRoot = $repoRoot.'/'.ltrim((string) ($data['root'] ?? ''), '/');
+    $report['app_root'] = $appRoot;
+
+    if (! is_dir($appRoot) || ! is_file($appRoot.'/artisan')) {
+        $report['warnings'][] = "app root 不存在或缺 artisan：{$appRoot}";
+        $report['hard_failures']++;
+
+        return $report;
+    }
+
+    applyGitState($appRoot, $repoRoot, $report);
+
+    foreach ($data['deployments'] as $dep) {
+        $report['deployments'][] = inspectDeployment($appRoot, (string) $report['remote'], $dep, $opts, $report);
+    }
+
+    foreach ($report['deployments'] as $dep) {
+        if (! $dep['ok']) {
+            $report['hard_failures']++;
+        }
+    }
+
+    return $report;
+}
+
+/**
+ * 采集 git 事实（分支 / 脏文件 / remote），backend 与 app 共用。
+ *
+ * marker 自身不算「代码脏」：它是工具产物，夜间只往 fix 分支提交源码，不会带上它；
+ * 但要单独警告「未提交」—— 未跟踪文件会阻断这些仓的 pull.sh 部署。
+ *
+ * @param  array<string, mixed>  $report
+ */
+function applyGitState(string $appRoot, string $repoRoot, array &$report): void
+{
+    [$code, $top] = run(['git', '-C', $appRoot, 'rev-parse', '--show-toplevel']);
+    if ($code !== 0 || realpath($top) !== realpath($repoRoot)) {
+        $report['warnings'][] = "git 根目录与 marker 位置不一致（{$top}）";
+        $report['hard_failures']++;
+    }
+
+    [, $branch] = run(['git', '-C', $appRoot, 'rev-parse', '--abbrev-ref', 'HEAD']);
+    $report['branch'] = $branch;
+
+    [$statusCode, $status] = run(['git', '-C', $appRoot, 'status', '--porcelain']);
+    $statusLines = $statusCode === 0 ? array_filter(explode("\n", $status)) : [];
+
+    $markerUntracked = false;
+    $codeLines = [];
+    foreach ($statusLines as $line) {
+        if (str_contains($line, '.moo-cloud.json')) {
+            $markerUntracked = true;
+
+            continue;
+        }
+        $codeLines[] = $line;
+    }
+
+    $report['dirty'] = $statusCode === 0 ? count($codeLines) : null;
+    if ($markerUntracked) {
+        $report['warnings'][] = '.moo-cloud.json 尚未提交：未跟踪文件会阻断 pull.sh 部署，确认后需随任务分支提交';
+    }
+    if (($report['dirty'] ?? 0) > 0) {
+        $report['warnings'][] = "工作区不干净（{$report['dirty']} 个文件）：夜间任务应跳过该仓库，避免把别人的改动一起提交";
+    }
+    if (in_array($branch, ['dev', 'main', 'master'], true)) {
+        $report['warnings'][] = "当前在基础分支 {$branch}：修复必须先切 fix 分支";
+    }
+
+    [, $remote] = run(['git', '-C', $appRoot, 'remote', 'get-url', 'origin']);
+    $report['remote'] = $remote;
+}
+
+/**
+ * 软件仓校验：没有 artisan / env token，用「包名指纹」确认仓没认错。
+ *
+ * verify 里每条是 {file, contains}：文件存在且包含该字符串才算对上。宁可硬失败，
+ * 也不要因为目录名像就认领 —— 软件侧认错仓的代价和改错项目一样。
+ *
+ * @param  array<string, mixed>  $report
+ * @return array<string, mixed>
+ */
+function inspectAppRepo(string $markerPath, string $repoRoot, array $data, array $report): array
+{
+    $report['role'] = 'app';
+    $report['app_root'] = $repoRoot;
+    $report['product'] = is_string($data['product'] ?? null) ? $data['product'] : null;
+    $report['platforms'] = is_array($data['platforms'] ?? null) ? $data['platforms'] : [];
+    $report['deployments'] = [];
+
+    if ($report['product'] === null || $report['product'] === '') {
+        $report['warnings'][] = 'app marker 缺 product';
+        $report['hard_failures']++;
+
+        return $report;
+    }
+
+    applyGitState($repoRoot, $repoRoot, $report);
+
+    $verify = is_array($data['verify'] ?? null) ? $data['verify'] : [];
+    if ($verify === []) {
+        $report['warnings'][] = 'app marker 没有 verify，无法校验包名指纹';
+        $report['hard_failures']++;
+    }
+
+    foreach ($verify as $rule) {
+        $file = $repoRoot.'/'.ltrim((string) ($rule['file'] ?? ''), '/');
+        $needle = (string) ($rule['contains'] ?? '');
+
+        if ($needle === '' || ! is_file($file)) {
+            $report['warnings'][] = "指纹文件不存在：{$rule['file']}";
+            $report['hard_failures']++;
+
+            continue;
+        }
+
+        if (! str_contains((string) file_get_contents($file), $needle)) {
+            $report['warnings'][] = "指纹不匹配：{$rule['file']} 不含 {$needle}";
+            $report['hard_failures']++;
+        }
+    }
+
+    return $report;
+}
+
+/**
+ * @return array<string, mixed>
+ */
+function inspectDeployment(string $appRoot, string $remote, mixed $dep, array $opts, array &$report): array
+{
+    $entry = [
+        'project' => is_array($dep) ? (string) ($dep['project'] ?? '') : '',
+        'env_file' => is_array($dep) ? (string) ($dep['env_file'] ?? '') : '',
+        'slug' => null,
+        'cloud_repo_url' => null,
+        'enabled' => null,
+        'ok' => false,
+        'errors' => [],
+        'warnings' => [],
+    ];
+
+    if ($entry['project'] === '' || $entry['env_file'] === '') {
+        $entry['errors'][] = 'deployment 缺 project 或 env_file';
+
+        return $entry;
+    }
+
+    $envPath = $appRoot.'/'.$entry['env_file'];
+    if (! is_file($envPath)) {
+        $entry['errors'][] = "env 文件不存在：{$entry['env_file']}";
+
+        return $entry;
+    }
+
+    $enabled = envValue($envPath, 'MOO_MONITOR_CLOUD_ENABLED');
+    $entry['enabled'] = $enabled === null ? null : filter_var($enabled, FILTER_VALIDATE_BOOLEAN);
+    if ($entry['enabled'] === false) {
+        $entry['warnings'][] = '该 env 的云端上报是关闭的（enabled=false），不会有新数据';
+    }
+
+    $token = envValue($envPath, 'MOO_MONITOR_CLOUD_TOKEN') ?? '';
+    if ($token === '') {
+        $entry['errors'][] = 'env 缺 MOO_MONITOR_CLOUD_TOKEN';
+
+        return $entry;
+    }
+
+    $cloud = $opts['cloud'] !== '' ? $opts['cloud'] : (envValue($envPath, 'MOO_MONITOR_CLOUD_URL') ?: 'https://c.mooeen.com');
+
+    if ($opts['offline']) {
+        $entry['ok'] = true;
+        $entry['warnings'][] = 'offline 模式：未反查云端 slug';
+
+        return $entry;
+    }
+
+    try {
+        $summary = httpJson($cloud.'/api/v1/summary', ['token' => $token]);
+    } catch (Throwable $e) {
+        $entry['errors'][] = '云端不可达：'.$e->getMessage();
+
+        return $entry;
+    }
+
+    if (($summary['status'] ?? 0) !== 200) {
+        $entry['errors'][] = 'summary 返回 HTTP '.($summary['status'] ?? '?').'（token 失效或权限不对）';
+
+        return $entry;
+    }
+
+    $slug = $summary['json']['project']['slug'] ?? null;
+    $cloudRepo = $summary['json']['project']['repo_url'] ?? null;
+    $entry['slug'] = $slug;
+    $entry['cloud_repo_url'] = $cloudRepo;
+
+    // 身份的第一道硬校验：token 反查出来的 slug 必须与 marker 写的一致。
+    if ($slug !== $entry['project']) {
+        $entry['errors'][] = "slug 不一致：marker={$entry['project']}，云端={$slug}";
+
+        return $entry;
+    }
+
+    // 第二道（警告级）：云端 repo_url 与本地 origin 不一致。云端未填时只提示，不阻断 ——
+    // token 反查已经证明身份，repo_url 是额外的防目录错位。
+    if ($cloudRepo === null || $cloudRepo === '') {
+        $entry['warnings'][] = '云端未填 repo_url（建议在项目设置里补上，增加一层防错）';
+    } elseif (normalizeRemote((string) $cloudRepo) !== normalizeRemote($remote)) {
+        $entry['warnings'][] = "repo_url 与本地 origin 不一致：云端={$cloudRepo}，本地={$remote}";
+    }
+
+    $entry['ok'] = true;
+
+    return $entry;
+}
+
+/** scp 形态与 URL 形态归一，只留 host/path。 */
+function normalizeRemote(string $remote): string
+{
+    $r = trim($remote);
+    $r = preg_replace('#^(git@|ssh://|https?://)#', '', $r) ?? $r;
+    $r = preg_replace('#^git@#', '', $r) ?? $r;
+    $r = str_replace(':', '/', $r);
+    $r = preg_replace('#\.git$#', '', $r) ?? $r;
+    $r = preg_replace('#/+$#', '', $r) ?? $r;
+
+    return strtolower($r);
+}
+
+/** 从 .env 形态的文件里取一个键（不执行、不导出，纯文本解析）。 */
+function envValue(string $file, string $key): ?string
+{
+    $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if ($line === '' || str_starts_with($line, '#')) {
+            continue;
+        }
+        if (! str_starts_with($line, $key.'=')) {
+            continue;
+        }
+
+        $value = trim(substr($line, strlen($key) + 1));
+
+        return trim($value, "\"'");
+    }
+
+    return null;
+}
+
+/**
+ * @return array{0: int, 1: string}
+ */
+function run(array $cmd): array
+{
+    $out = [];
+    $code = 0;
+    $line = implode(' ', array_map('escapeshellarg', $cmd)).' 2>/dev/null';
+    exec($line, $out, $code);
+
+    return [$code, trim(implode("\n", $out))];
+}
+
+/**
+ * @param  array<string, mixed>  $payload
+ * @return array{status: int, json: array<string, mixed>}
+ */
+function httpJson(string $url, array $payload, array $headers = []): array
+{
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 20,
+        CURLOPT_HTTPHEADER => array_merge(['Content-Type: application/json'], $headers),
+    ]);
+
+    $body = curl_exec($ch);
+    $error = curl_error($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($body === false) {
+        throw new RuntimeException('curl 失败：'.$error);
+    }
+
+    $json = json_decode((string) $body, true);
+    if (! is_array($json)) {
+        throw new RuntimeException("响应不是 JSON（HTTP {$status}）");
+    }
+
+    return ['status' => $status, 'json' => $json];
+}
+
+/**
+ * 账号级 MCP 的 tools/call。返回值是工具 JSON 文本解码后的数组。
+ *
+ * @return array<string, mixed>
+ */
+function mcpCall(string $cloud, string $token, string $tool, array $args): array
+{
+    $response = httpJson(
+        $cloud.'/api/v1/mcp',
+        ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/call', 'params' => ['name' => $tool, 'arguments' => $args]],
+        ['Authorization: Bearer '.$token],
+    );
+
+    if ($response['status'] !== 200) {
+        throw new RuntimeException("MCP 返回 HTTP {$response['status']}");
+    }
+
+    $result = $response['json']['result'] ?? null;
+    if (! is_array($result)) {
+        $error = $response['json']['error']['message'] ?? '缺少 result';
+
+        throw new RuntimeException('MCP 协议错误：'.$error);
+    }
+
+    $text = (string) ($result['content'][0]['text'] ?? '');
+    if (! empty($result['isError'])) {
+        throw new RuntimeException('工具返回错误：'.$text);
+    }
+
+    $data = json_decode($text, true);
+    if (! is_array($data)) {
+        throw new RuntimeException('工具返回不是 JSON 对象');
+    }
+
+    return $data;
+}
+
+/**
+ * 按类型筛掉明显不是线上故障的记录。
+ *
+ * - frontend_error：env 是发布渠道，dev-* 是开发环境噪音，只留 prod-* 与空值。
+ * - app_error：env 是构建类型，debug / verify 是自检包，只留 release 与空值。
+ *
+ * @param  list<array<string, mixed>>  $issues
+ * @return list<array<string, mixed>>
+ */
+function filterIssues(string $type, array $issues): array
+{
+    if ($type === 'frontend_error') {
+        return array_values(array_filter($issues, static function (array $issue): bool {
+            $env = strtolower((string) ($issue['env'] ?? ''));
+
+            return $env === '' || ! str_starts_with($env, 'dev');
+        }));
+    }
+
+    if ($type === 'app_error') {
+        return array_values(array_filter($issues, static function (array $issue): bool {
+            $env = strtolower((string) ($issue['env'] ?? ''));
+
+            return ! in_array($env, ['debug', 'verify'], true);
+        }));
+    }
+
+    return $issues;
+}
+
+/**
+ * @param  list<string>  $projects
+ * @return array<string, array<string, mixed>>
+ */
+function fetchQueue(array $opts, array $projects): array
+{
+    $limit = max(1, min(50, (int) $opts['limit']));
+    // --cloud 缺省时用生产地址；显式传入则覆盖（本地演练/自建实例）。
+    $cloud = $opts['cloud'] !== '' ? $opts['cloud'] : 'https://c.mooeen.com';
+    $queue = [];
+
+    // list_projects 先跑一次：既确认 token 能用，也拿到云端当前的项目清单做对照。
+    $known = array_column(mcpCall($cloud, $opts['token'], 'list_projects', [])['projects'] ?? [], 'slug');
+
+    foreach ($projects as $project) {
+        if (! in_array($project, $known, true)) {
+            fwrite(STDERR, "警告：{$project} 不在该账号的云端项目清单里，跳过拉取\n");
+
+            continue;
+        }
+
+        $queue[$project] = [];
+        foreach (['runtime', 'slow_query', 'frontend_error', 'app_error'] as $type) {
+            // env 语义四类不同：
+            //   runtime / slow_query → local / production / testing
+            //   frontend_error       → 渠道名（prod-huijia / dev-huijia / prod-wcl）
+            //   app_error            → 构建类型（release / debug / verify）
+            // 统一传 production 会把 frontend/app 全过滤掉，所以只对前两类下推过滤，
+            // 后两类拉全量后按语义在本地筛（见 filterIssues）。
+            $query = ['project' => $project, 'type' => $type, 'limit' => $limit];
+            if (in_array($type, ['runtime', 'slow_query'], true)) {
+                $query['env'] = 'production';
+            }
+
+            $result = mcpCall($cloud, $opts['token'], 'list_issues', $query);
+            $result['issues'] = filterIssues($type, $result['issues'] ?? []);
+            $result['count'] = count($result['issues']);
+            $queue[$project][$type] = $result;
+        }
+    }
+
+    return $queue;
+}
+
+/**
+ * @param  array<string, mixed>|null  $queue
+ */
+function renderMarkdown(array $payload, ?array $queue): string
+{
+    $lines = [
+        '# Preflight '.$payload['generated_at'],
+        '',
+        '- 模式：'.$payload['mode'].($queue !== null ? ' + fetch' : ''),
+        '- 仓库：'.count($payload['repos']).' · 硬失败：'.$payload['hard_failures'],
+        '',
+    ];
+
+    foreach ($payload['repos'] as $repo) {
+        $lines[] = '## '.basename($repo['repo']);
+        $lines[] = '';
+        $lines[] = '- app root：`'.$repo['app_root'].'`';
+        $lines[] = '- 分支：`'.$repo['branch'].'` · 脏文件：'.($repo['dirty'] ?? '?').' · remote：`'.$repo['remote'].'`';
+        if (($repo['role'] ?? '') === 'app') {
+            $lines[] = '- 软件：`'.($repo['product'] ?? '—').'` · 平台：'.implode('/', $repo['platforms'] ?? []);
+        }
+        $lines[] = '';
+        if (($repo['role'] ?? '') !== 'app') {
+            $lines[] = '| env | 云端 slug | 结果 | 备注 |';
+            $lines[] = '|---|---|---|---|';
+            foreach ($repo['deployments'] as $dep) {
+                $notes = array_merge($dep['errors'], $dep['warnings']);
+                $lines[] = sprintf(
+                    '| %s | %s | %s | %s |',
+                    $dep['env_file'],
+                    $dep['slug'] ?? '—',
+                    $dep['ok'] ? '✅' : '❌',
+                    str_replace('|', '\\|', implode('；', $notes))
+                );
+            }
+        }
+        foreach ($repo['warnings'] as $warning) {
+            $lines[] = '';
+            $lines[] = '- ⚠️ '.$warning;
+        }
+        $lines[] = '';
+    }
+
+    if ($queue !== null) {
+        $lines[] = '## 待处理队列（env=production，每类按 --limit 截断）';
+        $lines[] = '';
+        $lines[] = '| 项目 | runtime | slow_query | app_error |';
+        $lines[] = '|---|---:|---:|---:|';
+        foreach ($queue as $project => $types) {
+            $lines[] = sprintf(
+                '| %s | %d | %d | %d |',
+                $project,
+                count($types['runtime']['issues'] ?? []),
+                count($types['slow_query']['issues'] ?? []),
+                count($types['app_error']['issues'] ?? [])
+            );
+        }
+    }
+
+    return implode("\n", $lines)."\n";
+}
