@@ -46,7 +46,7 @@ moo-cloud-cli preflight —— 身份校验 + 拉取待处理队列
   --out=<dir>       输出目录（默认 <root>/moo-cloud-reports/<date>）
   --offline         跳过云端身份校验
   --fetch           拉取待处理队列（类型见 --types）
-  --types=<list>    逗号分隔，默认 runtime,slow_query,frontend_error,app_error,todo
+  --types=<list>    逗号分隔，默认 runtime,slow_query,frontend_error,app_error；待办用 todo
   --token=<token>   账号级 MCP token（默认 MOO_CLOUD_MCP_TOKEN 或 ~/.config/moo-fleet/mcp-token）
   --cloud=<url>     cloud 地址（默认 https://c.mooeen.com）
   --limit=<n>       每项目每类最多拉取条数（1-50，默认 5）
@@ -168,7 +168,8 @@ function parseOptions(array $args): array
         // 显式传入时覆盖 env / 缺省地址（本地演练、自建实例用）。
         'cloud' => getenv('MOO_CLOUD_URL') ?: '',
         'limit' => '5',
-        'types' => 'runtime,slow_query,frontend_error,app_error,todo',
+        // 默认只拉异常；待办是独立流程，必须显式 --types=todo。
+        'types' => 'runtime,slow_query,frontend_error,app_error',
     ];
 
     foreach ($args as $arg) {
