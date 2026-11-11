@@ -161,7 +161,7 @@ func runPreflight(args []string) int {
 	}
 
 	writeJSON(filepath.Join(outDir, "_preflight.json"), payload)
-	writeFile(filepath.Join(outDir, "_preflight.md"), renderMarkdown(payload, queue))
+	writeFile(filepath.Join(outDir, "_preflight.md"), renderMarkdown(payload["generated_at"].(string), mode, reports, hardFailures, queue))
 
 	if queue != nil {
 		writeJSON(filepath.Join(outDir, "_queue.json"), map[string]any{
@@ -714,23 +714,18 @@ func parseTypes(raw string) []string {
 	return out
 }
 
-func renderMarkdown(payload map[string]any, queue map[string]map[string]any) string {
+func renderMarkdown(generatedAt, mode string, repos []repoReport, hardFailures int, queue map[string]map[string]any) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Preflight %v\n\n", payload["generated_at"])
-	mode := fmt.Sprint(payload["mode"])
 	if queue != nil {
 		mode += " + fetch"
 	}
-	fmt.Fprintf(&b, "- 模式：%s\n- 仓库：%d · 硬失败：%v\n\n", mode, len(anySlice(payload["repos"])), payload["hard_failures"])
+	fmt.Fprintf(&b, "# Preflight %s\n\n", generatedAt)
+	fmt.Fprintf(&b, "- 模式：%s\n- 仓库：%d · 硬失败：%d\n\n", mode, len(repos), hardFailures)
 
-	for _, item := range anySlice(payload["repos"]) {
-		report, ok := item.(repoReport)
-		if !ok {
-			continue
-		}
+	for _, report := range repos {
 		fmt.Fprintf(&b, "## %s\n\n", filepath.Base(report.Repo))
-		fmt.Fprintf(&b, "- app root：`%s`\n", derefStr(report.AppRoot))
-		fmt.Fprintf(&b, "- 分支：`%s` · 脏文件：%s · remote：`%s`\n", derefStr(report.Branch), dirtyLabel(report.Dirty), derefStr(report.Remote))
+		fmt.Fprintf(&b, "- app root：`%s`\n", dash(report.AppRoot))
+		fmt.Fprintf(&b, "- 分支：`%s` · 脏文件：%s · remote：`%s`\n", dash(report.Branch), dirtyLabel(report.Dirty), dash(report.Remote))
 		if report.Role != nil && *report.Role == "app" {
 			fmt.Fprintf(&b, "- 软件：`%s` · 平台：%s\n", report.Product, strings.Join(report.Platforms, "/"))
 		}
@@ -743,7 +738,7 @@ func renderMarkdown(payload map[string]any, queue map[string]map[string]any) str
 				if dep.OK {
 					okMark = "✅"
 				}
-				fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", dep.EnvFile, derefStr(dep.Slug), okMark, strings.ReplaceAll(strings.Join(notes, "；"), "|", "\\|"))
+				fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", dep.EnvFile, dash(dep.Slug), okMark, strings.ReplaceAll(strings.Join(notes, "；"), "|", "\\|"))
 			}
 		}
 		for _, warning := range report.Warnings {
@@ -772,6 +767,14 @@ func countOf(result any) int {
 	}
 
 	return len(anySlice(m["issues"]))
+}
+
+func dash(v *string) string {
+	if v == nil || *v == "" {
+		return "—"
+	}
+
+	return *v
 }
 
 func dirtyLabel(dirty *int) string {
