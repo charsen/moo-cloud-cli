@@ -13,26 +13,42 @@
 
 ## 要求
 
-- PHP 8.2+，启用 `curl`、`json` 扩展
-- 本机有 `git`
+- **不需要 PHP、Node 或任何运行时**：单个可执行文件
+- 本机有 `git`（预检要读仓库状态）
 - 一份能访问 cloud 的账号级 MCP token（`mcp:read` 即可拉取；要回写还需 `mcp:write`）
+
+## 安装
+
+从 `dist/` 取对应平台的文件，改名为 `moo-cloud` 并加执行权限：
+
+| 平台 | 文件 |
+|---|---|
+| macOS Apple Silicon | `moo-cloud-darwin-arm64` |
+| macOS Intel | `moo-cloud-darwin-amd64` |
+| Linux x86_64 | `moo-cloud-linux-amd64` |
+| Linux arm64 | `moo-cloud-linux-arm64` |
+| Windows x86_64 | `moo-cloud-windows-amd64.exe` |
+
+```bash
+cp dist/moo-cloud-darwin-arm64 ./moo-cloud && chmod +x ./moo-cloud
+xattr -d com.apple.quarantine ./moo-cloud   # 仅 macOS 首次运行需要
+```
+
+从源码构建：`cd go && make dist`（需要 Go 1.22+）。
 
 ## 快速开始
 
 ```bash
-# 1. 放到任意位置
-git clone <repo> ~/tools/moo-cloud-cli
-
-# 2. 存 token（只读一次，权限 600）
+# 1. 存 token（只读一次，权限 600）
 mkdir -p ~/.config/moo-fleet
 printf '%s' '<moo_pat_...>' > ~/.config/moo-fleet/mcp-token
 chmod 600 ~/.config/moo-fleet/mcp-token
 
-# 3. 在工作区根目录执行
+# 2. 在工作区根目录执行
 cd /path/to/workspace
-~/tools/moo-cloud-cli/bin/preflight --offline     # 先只做本地校验
-~/tools/moo-cloud-cli/bin/preflight --fetch       # 校验 + 拉异常队列（默认类型）
-~/tools/moo-cloud-cli/bin/preflight --fetch --types=todo \
+./moo-cloud preflight --offline     # 先只做本地校验
+./moo-cloud preflight --fetch       # 校验 + 拉异常队列（默认类型）
+./moo-cloud preflight --fetch --types=todo \
   --out=moo-cloud-reports/$(date +%F)/todos        # 待办单独一条流
 ```
 
@@ -50,34 +66,34 @@ cd /path/to/workspace
 
 | 命令 | 作用 |
 |---|---|
-| `bin/preflight` | 身份校验 + 拉取异常/待办队列（主命令） |
-| `bin/mcp-server` | 本地 stdio MCP 桥：把云端 MCP 暴露给 Codex / WorkBuddy / Claude 等 |
-| `bin/agent-config` | 生成或写入各客户端的 MCP 配置 |
+| `moo-cloud preflight` | 身份校验 + 拉取异常/待办队列（主命令） |
+| `moo-cloud mcp-server` | 本地 stdio MCP 桥：把云端 MCP 暴露给 Codex / WorkBuddy / Claude 等 |
+| `moo-cloud agent-config` | 生成或写入各客户端的 MCP 配置 |
 
 报告模板：异常用 `templates/report.md`，待办用 `templates/todo-report.md`。
 
 ## 在 Codex / WorkBuddy / Claude 里使用
 
-CLI 自带一个本地 **stdio 桥** `bin/mcp-server`：客户端只需要 `command + args`，
+CLI 自带一个本地 **stdio 桥** `moo-cloud mcp-server`：客户端只需要 `command + args`，
 token 和云端地址由桥从本机读取（`~/.config/moo-fleet/mcp-token`），不用逐客户端配 URL / Bearer。
 
 ### 生成配置
 
 | 客户端 | 命令 | 写入位置 |
 |---|---|---|
-| Codex | `php bin/agent-config --target=codex --write` | `~/.codex/config.toml` |
-| WorkBuddy | `php bin/agent-config --target=workbuddy --write` | `~/.workbuddy/mcp.json` |
-| Claude / Cursor / 通用 | `php bin/agent-config --target=json` | 手动粘贴到各自配置 |
+| Codex | `./moo-cloud agent-config --target=codex --write` | `~/.codex/config.toml` |
+| WorkBuddy | `./moo-cloud agent-config --target=workbuddy --write` | `~/.workbuddy/mcp.json` |
+| Claude / Cursor / 通用 | `./moo-cloud agent-config --target=json` | 手动粘贴到各自配置 |
 
-已有同名配置时默认不覆盖，更新时加 `--force`；`--home=<dir>` 可演练到临时目录，
-`--php=<path>` 指定解释器（默认用稳定的 `php` 路径，避免 Homebrew Cellar 升级后失效）。
+已有同名配置时默认不覆盖，更新时加 `--force`；`--home=<dir>` 可演练到临时目录。
+写入的 `command` 是 **moo-cloud 自身的绝对路径**，所以移动二进制后要重新跑一次 `agent-config`。
 
 生成的 Codex 片段（只读工具带自动批准）：
 
 ```toml
 [mcp_servers.moo_cloud]
-command = "/opt/homebrew/bin/php"
-args = ["/path/to/moo-cloud-cli/bin/mcp-server"]
+command = "/path/to/moo-cloud"
+args = ["mcp-server"]
 
 [mcp_servers.moo_cloud.tools.list_projects]
 approval_mode = "approve"
@@ -90,8 +106,8 @@ WorkBuddy / Claude / Cursor 等通用 JSON：
   "mcpServers": {
     "moo-cloud": {
       "type": "stdio",
-      "command": "/opt/homebrew/bin/php",
-      "args": ["/path/to/moo-cloud-cli/bin/mcp-server"]
+      "command": "/path/to/moo-cloud",
+      "args": ["mcp-server"]
     }
   }
 }
@@ -99,7 +115,7 @@ WorkBuddy / Claude / Cursor 等通用 JSON：
 
 ### Codex：重启即生效
 
-1. 写入配置：`php bin/agent-config --target=codex --write`
+1. 写入配置：`./moo-cloud agent-config --target=codex --write`
 2. 完全退出 Codex 再打开（新开会话）
 3. 验证：
 
@@ -119,7 +135,7 @@ WorkBuddy / Claude / Cursor 等通用 JSON：
 1. 写入配置（已有条目时加 `--force` 覆盖）：
 
    ```bash
-   php bin/agent-config --target=workbuddy --write --force
+   ./moo-cloud agent-config --target=workbuddy --write --force
    ```
 
 2. **完全退出 WorkBuddy**：用 `Cmd+Q`，不是只关窗口；确认进程真的退出：
@@ -163,7 +179,7 @@ WorkBuddy 常见问题：
 ### 手工验证桥
 
 ```bash
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | php bin/mcp-server
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | ./moo-cloud mcp-server
 ```
 
 正常返回一行 JSON；报“缺少 token”时检查 `~/.config/moo-fleet/mcp-token`。
@@ -268,11 +284,17 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | php
 |---|---|
 | `mcp-server: 缺少 token` | 确认 `~/.config/moo-fleet/mcp-token` 存在且权限 600；或显式传 `--token=` |
 | 客户端里看不到 Moo Cloud 工具 | 重启客户端；确认 `command`/`args` 路径可执行；先用手工 `printf` 验证桥 |
-| 生成的 `command` 路径不对 | 用 `--php="$(command -v php)"` 重新生成 |
+| 生成的 `command` 路径不对 | 移动过二进制：重新跑一次 `moo-cloud agent-config --write --force` |
+| macOS 提示“无法打开/已损坏” | `xattr -d com.apple.quarantine ./moo-cloud` |
 | `云端不可达` / 401 | 检查网络与 token 是否被吊销；`--cloud` 是否指向正确实例 |
 | 重复执行 `--write` 没变化 | 已有同名配置时默认跳过，需要覆盖加 `--force` |
 | 报告目录日期不对 | 日期按 Asia/Shanghai；可用 `--date=YYYY-MM-DD` 指定 |
 | 报“部署指向多个云端” | 各部署的 `MOO_MONITOR_CLOUD_URL` 不一致，用 `--cloud=` 显式指定拉取目标 |
+
+## 旧版 PHP 入口
+
+`bin/preflight`、`bin/mcp-server`、`bin/agent-config` 是迁移前的 PHP 实现，保留给已有安装与夜间任务；
+新机器一律用 `dist/` 二进制，功能与参数一致。
 
 ## 安全
 
