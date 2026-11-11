@@ -5,6 +5,9 @@ import (
 	"os"
 )
 
+// 构建时通过 -ldflags "-X main.version=..." 注入。
+var version = "dev"
+
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 {
@@ -19,6 +22,9 @@ func main() {
 		os.Exit(runMcpServer(args[1:]))
 	case "agent-config":
 		os.Exit(runAgentConfig(args[1:]))
+	case "version", "--version", "-v":
+		fmt.Println("moo-cloud " + version)
+		os.Exit(0)
 	case "help", "-h", "--help":
 		printHelp()
 		os.Exit(0)

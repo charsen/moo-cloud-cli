@@ -35,6 +35,7 @@ xattr -d com.apple.quarantine ./moo-cloud   # 仅 macOS 首次运行需要
 ```
 
 从源码构建：`cd go && make dist`（需要 Go 1.22+）；测试：`cd go && go test ./...`。
+`moo-cloud --version` 查看构建版本（由 git describe 注入）。
 
 ## 快速开始
 
@@ -190,7 +191,8 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | ./m
 `claude_desktop_config.json`），重启客户端即可。
 
 桥的行为：stdin 每行一条 JSON-RPC，原样转发到云端 `/api/v1/mcp`；有 `id` 的写回一行，
-通知不写 stdout；网络失败返回同 `id` 的 JSON-RPC error。写入配置前会备份原文件，
+通知不写 stdout；网络失败返回同 `id` 的 JSON-RPC error。云端若返回 SSE（`text/event-stream`），
+桥会取最后一条 `data` 消息。写入配置前会备份原文件，
 重复执行不会重复添加。
 
 ## 仓库标记：`.moo-cloud.json`
@@ -263,6 +265,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | ./m
 - 有效范围由 MCP `list_projects` 返回；preflight 只拉范围内的类型，
   范围外的类别在队列里标 `"skipped": "不在处理范围"`，不会修复、不会回写
 - 只影响自动化；MCP 读取与页面手动处理不受限制
+- 拉取按项目并发（最多 4 个）；429 / 5xx 自动重试两次
 
 这样 A 项目可以只处理后端、B 项目连前端一起处理，同一个账号也能表达。
 

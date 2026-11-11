@@ -138,7 +138,31 @@ func forwardMcp(endpoint, token, body string) ([]byte, error) {
 		return nil, err
 	}
 
+	// 云端当前返回 JSON；如果以后改成 SSE（text/event-stream），取最后一条 data。
+	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		if event, ok := lastSseData(raw); ok {
+			return event, nil
+		}
+	}
+
 	return raw, nil
+}
+
+/** 从 SSE 响应里取最后一个非空 data 行（MCP 的 JSON-RPC 消息在 data 里）。 */
+func lastSseData(raw []byte) ([]byte, bool) {
+	var last []byte
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload != "" && payload != "[DONE]" {
+			last = []byte(payload)
+		}
+	}
+
+	return last, last != nil
 }
 
 func writeRaw(writer *bufio.Writer, v any) {

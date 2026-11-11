@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -585,6 +586,11 @@ func fetchQueue(cloud string, opts pfOptions, projects []string) (map[string]map
 	}
 
 	queue := map[string]map[string]any{}
+	// 项目间并发（最多 4 个），每个项目内部仍按类型顺序拉取；结果写回由 mutex 保护。
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4)
+
 	for _, project := range projects {
 		if !contains(known, project) {
 			fmt.Fprintf(os.Stderr, "警告：%s 不在该账号的云端项目清单里，跳过拉取\n", project)
@@ -592,36 +598,49 @@ func fetchQueue(cloud string, opts pfOptions, projects []string) (map[string]map
 			continue
 		}
 
-		queue[project] = map[string]any{}
-		for _, typ := range types {
-			// 账号默认 + 项目覆盖后的范围；服务端旧版本没有该字段时按全部处理。
-			if scope, ok := handled[project]; ok && !contains(scope, typ) {
-				queue[project][typ] = map[string]any{"issues": []any{}, "count": 0, "skipped": "不在处理范围"}
+		wg.Add(1)
+		go func(project string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
-				continue
-			}
-			tool := "list_issues"
-			if typ == "todo" {
-				tool = "list_todos"
-			}
-			if !contains(available, tool) {
-				fmt.Fprintf(os.Stderr, "警告：服务端未提供 %s，跳过 %s 的 %s\n", tool, project, typ)
-				queue[project][typ] = map[string]any{"issues": []any{}, "count": 0, "skipped": "服务端未提供 " + tool}
+			result := map[string]any{}
+			for _, typ := range types {
+				// 账号默认 + 项目覆盖后的范围；服务端旧版本没有该字段时按全部处理。
+				if scope, ok := handled[project]; ok && !contains(scope, typ) {
+					result[typ] = map[string]any{"issues": []any{}, "count": 0, "skipped": "不在处理范围"}
 
-				continue
+					continue
+				}
+
+				tool := "list_issues"
+				if typ == "todo" {
+					tool = "list_todos"
+				}
+				if !contains(available, tool) {
+					fmt.Fprintf(os.Stderr, "警告：服务端未提供 %s，跳过 %s 的 %s\n", tool, project, typ)
+					result[typ] = map[string]any{"issues": []any{}, "count": 0, "skipped": "服务端未提供 " + tool}
+
+					continue
+				}
+
+				one, err := fetchOneType(cloud, opts.token, project, typ, limit)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "警告：%s 的 %s 拉取失败，跳过：%v\n", project, typ, err)
+					result[typ] = map[string]any{"issues": []any{}, "count": 0, "error": err.Error()}
+
+					continue
+				}
+				result[typ] = one
 			}
 
-			result, err := fetchOneType(cloud, opts.token, project, typ, limit)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "警告：%s 的 %s 拉取失败，跳过：%v\n", project, typ, err)
-				queue[project][typ] = map[string]any{"issues": []any{}, "count": 0, "error": err.Error()}
-
-				continue
-			}
-			queue[project][typ] = result
-		}
+			mu.Lock()
+			queue[project] = result
+			mu.Unlock()
+		}(project)
 	}
 
+	wg.Wait()
 	return queue, nil
 }
 
@@ -781,7 +800,13 @@ func renderMarkdown(generatedAt, mode string, repos []repoReport, hardFailures i
 	if queue != nil {
 		b.WriteString("## 待处理队列（每类按 --limit 截断）\n\n")
 		b.WriteString("| 项目 | runtime | slow_query | frontend | app | todo |\n|---|---:|---:|---:|---:|---:|\n")
-		for project, types := range queue {
+		projectNames := make([]string, 0, len(queue))
+		for name := range queue {
+			projectNames = append(projectNames, name)
+		}
+		sortStrings(projectNames)
+		for _, project := range projectNames {
+			types := queue[project]
 			fmt.Fprintf(&b, "| %s | %d | %d | %d | %d | %d |\n", project,
 				countOf(types["runtime"]), countOf(types["slow_query"]), countOf(types["frontend_error"]),
 				countOf(types["app_error"]), countOf(types["todo"]))

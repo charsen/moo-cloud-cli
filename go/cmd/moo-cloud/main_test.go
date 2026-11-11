@@ -359,6 +359,17 @@ func TestFetchQueueSkipsTypesOutOfScope(t *testing.T) {
 	}
 }
 
+func TestLastSseData(t *testing.T) {
+	raw := []byte("event: message\ndata: {\"a\":1}\n\ndata: {\"b\":2}\n\ndata: [DONE]\n")
+	got, ok := lastSseData(raw)
+	if !ok || string(got) != `{"b":2}` {
+		t.Fatalf("lastSseData=%s ok=%v", got, ok)
+	}
+	if _, ok := lastSseData([]byte("event: ping\n")); ok {
+		t.Fatal("没有 data 行时应返回 false")
+	}
+}
+
 func TestFetchQueueEmptyTypes(t *testing.T) {
 	if _, err := fetchQueue("http://127.0.0.1:1", pfOptions{token: "t", types: ""}, []string{"p1"}); err == nil {
 		t.Fatal("空类型应报错")

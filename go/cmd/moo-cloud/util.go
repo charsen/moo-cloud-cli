@@ -43,7 +43,12 @@ func initialToken() string {
 		return v
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		if raw, err := os.ReadFile(filepath.Join(home, ".config", "moo-fleet", "mcp-token")); err == nil {
+		path := filepath.Join(home, ".config", "moo-fleet", "mcp-token")
+		if raw, err := os.ReadFile(path); err == nil {
+			if info, err := os.Stat(path); err == nil && info.Mode().Perm()&0o077 != 0 {
+				fmt.Fprintf(os.Stderr, "警告：%s 权限过宽（%o），建议 chmod 600\n", path, info.Mode().Perm())
+			}
+
 			return strings.TrimSpace(string(raw))
 		}
 	}
@@ -56,23 +61,47 @@ func httpJSON(url string, payload any, headers map[string]string, timeout time.D
 	if err != nil {
 		return 0, nil, err
 	}
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return 0, nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
 
-	return resp.StatusCode, raw, err
+	// 只对网络错误 / 429 / 5xx 重试；4xx 是确定性错误，重试没有意义。
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 300 * time.Millisecond)
+		}
+
+		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return 0, nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+
+		client := &http.Client{Timeout: timeout}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+
+			continue
+		}
+		raw, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+
+			continue
+		}
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+
+			continue
+		}
+
+		return resp.StatusCode, raw, nil
+	}
+
+	return 0, nil, lastErr
 }
 
 // mcpCall 调云端 tools/call，返回工具 JSON 文本解码后的对象。
