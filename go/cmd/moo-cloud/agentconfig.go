@@ -10,6 +10,16 @@ import (
 )
 
 func runAgentConfig(args []string) int {
+	if contains(args, "--help") || contains(args, "-h") {
+		fmt.Print(`agent-config：生成/写入客户端 MCP 配置
+
+  --target=codex|workbuddy|json|claude
+  --write    --force    --home=<dir>
+`)
+
+		return 0
+	}
+
 	opts := struct {
 		target string
 		write  bool

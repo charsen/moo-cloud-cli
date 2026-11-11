@@ -34,7 +34,7 @@ cp dist/moo-cloud-darwin-arm64 ./moo-cloud && chmod +x ./moo-cloud
 xattr -d com.apple.quarantine ./moo-cloud   # 仅 macOS 首次运行需要
 ```
 
-从源码构建：`cd go && make dist`（需要 Go 1.22+）。
+从源码构建：`cd go && make dist`（需要 Go 1.22+）；测试：`cd go && go test ./...`。
 
 ## 快速开始
 

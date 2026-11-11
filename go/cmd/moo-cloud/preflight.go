@@ -25,11 +25,11 @@ type pfOptions struct {
 }
 
 type markerFile struct {
-	Role        string `json:"role"`
-	Root        string `json:"root"`
-	Product     string `json:"product"`
-	Platforms   []string
-	Verify      []struct {
+	Role      string `json:"role"`
+	Root      string `json:"root"`
+	Product   string `json:"product"`
+	Platforms []string
+	Verify    []struct {
 		File     string `json:"file"`
 		Contains string `json:"contains"`
 	} `json:"verify"`
@@ -67,6 +67,17 @@ type repoReport struct {
 }
 
 func runPreflight(args []string) int {
+	if contains(args, "--help") || contains(args, "-h") {
+		fmt.Print(`preflight：身份校验 + 拉取异常/待办队列
+
+  --root=<dir>   --date=<Y-m-d>   --out=<dir>
+  --offline      --fetch          --types=<list>
+  --token=       --cloud=         --limit=<n>
+`)
+
+		return 0
+	}
+
 	opts := parsePfOptions(args)
 
 	if !regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`).MatchString(opts.date) {
@@ -813,11 +824,13 @@ func normalizeRemote(remote string) string {
 	for _, prefix := range []string{"git@", "ssh://", "https://", "http://"} {
 		r = strings.TrimPrefix(r, prefix)
 	}
+	// ssh://git@host/... 去掉 scheme 后还会剩一个 git@。
+	r = strings.TrimPrefix(r, "git@")
 	r = strings.ReplaceAll(r, ":", "/")
-	r = strings.TrimSuffix(r, ".git")
 	r = strings.TrimRight(r, "/")
+	r = strings.TrimSuffix(r, ".git")
 
-	return strings.ToLower(r)
+	return strings.ToLower(strings.TrimRight(r, "/"))
 }
 
 func writeJSON(path string, v any) {
