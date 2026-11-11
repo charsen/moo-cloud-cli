@@ -615,6 +615,22 @@ function filterIssues(string $type, array $issues): array
     return $issues;
 }
 
+/** 读取服务端工具清单，用于「服务端还没上新工具」时优雅跳过而不是整批失败。 */
+function mcpTools(string $cloud, string $token): array
+{
+    $response = httpJson(
+        $cloud.'/api/v1/mcp',
+        ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/list', 'params' => (object) []],
+        ['Authorization: Bearer '.$token],
+    );
+
+    if ($response['status'] !== 200) {
+        throw new RuntimeException("tools/list 返回 HTTP {$response['status']}");
+    }
+
+    return array_column($response['json']['result']['tools'] ?? [], 'name');
+}
+
 /**
  * @param  list<string>  $projects
  * @return array<string, array<string, mixed>>
@@ -629,6 +645,9 @@ function fetchQueue(array $opts, array $projects): array
     // list_projects 先跑一次：既确认 token 能用，也拿到云端当前的项目清单做对照。
     $known = array_column(mcpCall($cloud, $opts['token'], 'list_projects', [])['projects'] ?? [], 'slug');
 
+    // 服务端版本可能落后于 CLI：缺哪个工具就跳过哪个类型，不要让整批拉取失败。
+    $available = mcpTools($cloud, $opts['token']);
+
     foreach ($projects as $project) {
         if (! in_array($project, $known, true)) {
             fwrite(STDERR, "警告：{$project} 不在该账号的云端项目清单里，跳过拉取\n");
@@ -638,6 +657,14 @@ function fetchQueue(array $opts, array $projects): array
 
         $queue[$project] = [];
         foreach (parseTypes((string) $opts['types']) as $type) {
+            $tool = $type === 'todo' ? 'list_todos' : 'list_issues';
+            if (! in_array($tool, $available, true)) {
+                fwrite(STDERR, "警告：服务端未提供 {$tool}，跳过 {$project} 的 {$type}\n");
+                $queue[$project][$type] = ['issues' => [], 'count' => 0, 'skipped' => "服务端未提供 {$tool}"];
+
+                continue;
+            }
+
             // 待办是独立工具：没有 env 语义，key 是 ULID。
             if ($type === 'todo') {
                 $result = mcpCall($cloud, $opts['token'], 'list_todos', [
