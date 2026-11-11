@@ -57,9 +57,13 @@ while (($line = fgets(STDIN)) !== false) {
     $id = $message['id'] ?? null;
     $response = forward($endpoint, $token, $line, $id);
 
-    if ($id !== null && is_array($response)) {
+    if ($id !== null && (is_object($response) || is_array($response))) {
         // 云端错误偶尔不带 id；补上请求 id，客户端才不会把它当成无主消息丢掉。
-        if (! isset($response['id'])) {
+        if (is_object($response)) {
+            if (! isset($response->id)) {
+                $response->id = $id;
+            }
+        } elseif (! isset($response['id'])) {
             $response['id'] = $id;
         }
         fwrite(STDOUT, json_encode($response, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)."\n");
@@ -104,7 +108,7 @@ function initialToken(): string
 }
 
 /** 转发一条 JSON-RPC；失败时合成同 id 的 error，避免客户端一直等。 */
-function forward(string $endpoint, string $token, string $body, mixed $id): ?array
+function forward(string $endpoint, string $token, string $body, mixed $id): object|array|null
 {
     $ch = curl_init($endpoint);
     curl_setopt_array($ch, [
@@ -129,8 +133,10 @@ function forward(string $endpoint, string $token, string $body, mixed $id): ?arr
         return rpcError($id, -32603, '云端不可达：'.$error);
     }
 
-    $decoded = json_decode((string) $raw, true);
-    if (! is_array($decoded)) {
+    // 必须保留 JSON 对象语义：assoc 解码会把 "properties": {} 变成 []，
+    // Codex 等严格客户端会判成「invalid type: sequence, expected a map」。
+    $decoded = json_decode((string) $raw);
+    if (! is_object($decoded) && ! is_array($decoded)) {
         return rpcError($id, -32603, "云端返回非 JSON（HTTP {$status}）");
     }
 

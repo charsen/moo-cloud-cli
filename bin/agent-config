@@ -61,11 +61,12 @@ function main(array $args): int
 /** @return array<string, mixed> */
 function serverEntry(string $command, string $server): array
 {
+    // WorkBuddy 的 user mcp.json 只接受 type/command/args/env/cwd/url/headers/timeout，
+    // 多余字段会被判非法，所以这里不放 description。
     return [
         'type' => 'stdio',
         'command' => $command,
         'args' => [$server],
-        'description' => 'Moo Cloud：项目异常与待办（账号级 MCP）',
     ];
 }
 
