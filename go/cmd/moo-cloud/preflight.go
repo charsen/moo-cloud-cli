@@ -557,11 +557,25 @@ func fetchQueue(cloud string, opts pfOptions, projects []string) (map[string]map
 		return nil, err
 	}
 	known := []string{}
+	handled := map[string][]string{}
 	for _, item := range anySlice(knownResp["projects"]) {
-		if m, ok := item.(map[string]any); ok {
-			if slug, ok := m["slug"].(string); ok {
-				known = append(known, slug)
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		slug, _ := m["slug"].(string)
+		if slug == "" {
+			continue
+		}
+		known = append(known, slug)
+		if raw, ok := m["handled_types"].([]any); ok {
+			scope := make([]string, 0, len(raw))
+			for _, v := range raw {
+				if typ, ok := v.(string); ok {
+					scope = append(scope, typ)
+				}
 			}
+			handled[slug] = scope
 		}
 	}
 
@@ -580,6 +594,12 @@ func fetchQueue(cloud string, opts pfOptions, projects []string) (map[string]map
 
 		queue[project] = map[string]any{}
 		for _, typ := range types {
+			// 账号默认 + 项目覆盖后的范围；服务端旧版本没有该字段时按全部处理。
+			if scope, ok := handled[project]; ok && !contains(scope, typ) {
+				queue[project][typ] = map[string]any{"issues": []any{}, "count": 0, "skipped": "不在处理范围"}
+
+				continue
+			}
 			tool := "list_issues"
 			if typ == "todo" {
 				tool = "list_todos"
