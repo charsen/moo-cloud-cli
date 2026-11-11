@@ -105,7 +105,7 @@ function emitCodex(string $home, string $command, string $server, array $opts): 
     backup($file);
     writeFile($file, rtrim($existing)."\n\n".$block);
 
-    fwrite(STDERR, "已写入 {$file}\n");
+    fwrite(STDERR, "已写入 {$file}；重启 Codex 后生效\n");
 
     return 0;
 }
@@ -149,6 +149,7 @@ function emitWorkbuddy(string $home, string $command, string $server, array $opt
     writeFile($file, json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT)."\n");
 
     fwrite(STDERR, "已写入 {$file}\n");
+    fwrite(STDERR, "下一步：完全退出 WorkBuddy（Cmd+Q）→ 重开 → 在 MCP 面板启用 moo-cloud → 新建会话\n");
 
     return 0;
 }

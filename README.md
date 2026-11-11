@@ -61,23 +61,26 @@ cd /path/to/workspace
 CLI 自带一个本地 **stdio 桥** `bin/mcp-server`：客户端只需要 `command + args`，
 token 和云端地址由桥从本机读取（`~/.config/moo-fleet/mcp-token`），不用逐客户端配 URL / Bearer。
 
-一键写入配置：
+### 生成配置
 
-```bash
-php bin/agent-config --target=codex --write      # ~/.codex/config.toml
-php bin/agent-config --target=workbuddy --write  # ~/.workbuddy/mcp.json
-php bin/agent-config --target=json               # 通用 {mcpServers:{...}}
-```
+| 客户端 | 命令 | 写入位置 |
+|---|---|---|
+| Codex | `php bin/agent-config --target=codex --write` | `~/.codex/config.toml` |
+| WorkBuddy | `php bin/agent-config --target=workbuddy --write` | `~/.workbuddy/mcp.json` |
+| Claude / Cursor / 通用 | `php bin/agent-config --target=json` | 手动粘贴到各自配置 |
 
-只打印不落盘就去掉 `--write`；`--force` 覆盖同名项，`--home=<dir>` 可演练到临时目录，
+已有同名配置时默认不覆盖，更新时加 `--force`；`--home=<dir>` 可演练到临时目录，
 `--php=<path>` 指定解释器（默认用稳定的 `php` 路径，避免 Homebrew Cellar 升级后失效）。
 
-生成的 Codex 片段：
+生成的 Codex 片段（只读工具带自动批准）：
 
 ```toml
 [mcp_servers.moo_cloud]
 command = "/opt/homebrew/bin/php"
 args = ["/path/to/moo-cloud-cli/bin/mcp-server"]
+
+[mcp_servers.moo_cloud.tools.list_projects]
+approval_mode = "approve"
 ```
 
 WorkBuddy / Claude / Cursor 等通用 JSON：
@@ -94,32 +97,85 @@ WorkBuddy / Claude / Cursor 等通用 JSON：
 }
 ```
 
+### Codex：重启即生效
+
+1. 写入配置：`php bin/agent-config --target=codex --write`
+2. 完全退出 Codex 再打开（新开会话）
+3. 验证：
+
+   ```bash
+   codex mcp list | grep moo_cloud
+   codex exec --skip-git-repo-check "调用 moo_cloud 的 list_projects 工具，只回答项目数量"
+   ```
+
+4. 审批：8 个只读工具自动批准；`resolve_issue` / `update_todo_status` 会请求人工批准。
+   无人值守场景（如 CI）才用 `--dangerously-bypass-approvals-and-sandbox`，平时不要。
+
+### WorkBuddy：写配置 → 完全退出 → 面板启用 → 新会话
+
+> **关键**：WorkBuddy 不会在启动时自动加载 `mcp.json` 里新加的 server。
+> 写完配置必须再在它的 MCP 面板里启用一次，并新建会话，否则会话里看不到工具。
+
+1. 写入配置（已有条目时加 `--force` 覆盖）：
+
+   ```bash
+   php bin/agent-config --target=workbuddy --write --force
+   ```
+
+2. **完全退出 WorkBuddy**：用 `Cmd+Q`，不是只关窗口；确认进程真的退出：
+
+   ```bash
+   pgrep -f "/Applications/WorkBuddy.app/Contents/MacOS/Electron" || echo "已退出"
+   ```
+
+3. 重新打开 WorkBuddy。
+4. 打开 **设置 → MCP**（部分版本叫「工具」或「连接器」），找到 `moo-cloud`，
+   打开启用开关。第一次启用可能要求确认/批准该 MCP 配置，选择允许。
+5. **新建一个会话**（旧会话不会自动获得新工具），让它「列出 MCP 工具」或
+   「列出 Moo Cloud 的项目」。
+
+验证 daemon 是否拉起了桥：
+
+```bash
+grep "custom-mcp:moo-cloud" ~/.workbuddy/logs/daemon.log | tail -3
+```
+
+正常会看到：
+
+```
+wb:mcp:setEnabled arg="custom-mcp:moo-cloud"
+wb:mcp:connect arg="custom-mcp:moo-cloud"
+MCP-AuthDiag stdio-connected {"id":"custom-mcp:moo-cloud","pidSpawned":...}
+```
+
+工具列表应恰好是 10 个：`list_projects`、`list_issues`、`get_issue`、`get_issue_markdown`、
+`list_apps`、`list_todos`、`get_todo`、`get_todo_image`、`resolve_issue`、`update_todo_status`。
+
+WorkBuddy 常见问题：
+
+| 现象 | 处理 |
+|---|---|
+| MCP 面板里没有 `moo-cloud` | 确认 `~/.workbuddy/mcp.json` 有该条目；字段只能是 `type` / `command` / `args` / `env` / `cwd` / `url` / `headers` / `timeout`，带 `description` 会被整条拒绝；然后完全退出重开，或用 `--force` 重写 |
+| 启用了但会话里没有工具 | 新建会话；旧会话不会热加载 |
+| 日志有 `stdio-connected` 但工具为空 | 手工验证桥（见下），多半是 token 缺失 |
+| 改了配置没变化 | 只关窗口不算重启，必须 `Cmd+Q` 完全退出 |
+
+### 手工验证桥
+
+```bash
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | php bin/mcp-server
+```
+
+正常返回一行 JSON；报“缺少 token”时检查 `~/.config/moo-fleet/mcp-token`。
+
+### Claude / Cursor
+
+把上面的通用 JSON 粘到对应客户端的 MCP 配置（Claude Desktop 是
+`claude_desktop_config.json`），重启客户端即可。
+
 桥的行为：stdin 每行一条 JSON-RPC，原样转发到云端 `/api/v1/mcp`；有 `id` 的写回一行，
 通知不写 stdout；网络失败返回同 `id` 的 JSON-RPC error。写入配置前会备份原文件，
 重复执行不会重复添加。
-
-适用：任何支持 **stdio MCP** 的客户端——Codex CLI、WorkBuddy、Claude Desktop / Code、
-Cursor 等。Codex 写 `~/.codex/config.toml`（追加，不改其他段）；WorkBuddy 写
-`~/.workbuddy/mcp.json`（合并进 `mcpServers`，保留已有 getnote 等 server）。
-
-写完配置后：
-
-1. **Codex**：退出重开即生效；生成的配置会对 8 个只读工具自动批准，
-   `resolve_issue` / `update_todo_status` 仍会请求人工批准。
-   **WorkBuddy**：重启后还要在「MCP / 连接器」面板里把 `moo-cloud` 启用一次
-   （`wb:mcp:setEnabled`），否则 daemon 不会加载它；启用后能看到 10 个工具。
-2. 在客户端里问「列出 Moo Cloud 的项目」或直接看工具列表，应出现
-   `list_projects` / `list_issues` / `get_todo` / `resolve_issue` 等；
-3. 不放心可以先手工验证桥：
-
-```bash
-printf '%s
-' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | php bin/mcp-server
-```
-
-正常会返回一行 JSON。
-
-桥本身也接受 `--token=` / `--cloud=`（平时不需要，默认读本机 token 与生产地址）。
 
 ## 仓库标记：`.moo-cloud.json`
 
