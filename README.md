@@ -46,6 +46,16 @@ cd /path/to/workspace
 
 报告正文模板见 `templates/report.md`。
 
+## 命令一览
+
+| 命令 | 作用 |
+|---|---|
+| `bin/preflight` | 身份校验 + 拉取异常/待办队列（主命令） |
+| `bin/mcp-server` | 本地 stdio MCP 桥：把云端 MCP 暴露给 Codex / WorkBuddy / Claude 等 |
+| `bin/agent-config` | 生成或写入各客户端的 MCP 配置 |
+
+报告模板：异常用 `templates/report.md`，待办用 `templates/todo-report.md`。
+
 ## 在 Codex / WorkBuddy / Claude 里使用
 
 CLI 自带一个本地 **stdio 桥** `bin/mcp-server`：客户端只需要 `command + args`，
@@ -88,6 +98,26 @@ WorkBuddy / Claude / Cursor 等通用 JSON：
 通知不写 stdout；网络失败返回同 `id` 的 JSON-RPC error。写入配置前会备份原文件，
 重复执行不会重复添加。
 
+适用：任何支持 **stdio MCP** 的客户端——Codex CLI、WorkBuddy、Claude Desktop / Code、
+Cursor 等。Codex 写 `~/.codex/config.toml`（追加，不改其他段）；WorkBuddy 写
+`~/.workbuddy/mcp.json`（合并进 `mcpServers`，保留已有 getnote 等 server）。
+
+写完配置后：
+
+1. **重启客户端**（Codex 退出重开；WorkBuddy 重新加载 MCP / 重启应用）；
+2. 在客户端里问「列出 Moo Cloud 的项目」或直接看工具列表，应出现
+   `list_projects` / `list_issues` / `get_todo` / `resolve_issue` 等；
+3. 不放心可以先手工验证桥：
+
+```bash
+printf '%s
+' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | php bin/mcp-server
+```
+
+正常会返回一行 JSON。
+
+桥本身也接受 `--token=` / `--cloud=`（平时不需要，默认读本机 token 与生产地址）。
+
 ## 仓库标记：`.moo-cloud.json`
 
 在每个待纳管的仓库**根目录**放一份。两种角色：
@@ -129,6 +159,26 @@ WorkBuddy / Claude / Cursor 等通用 JSON：
 - `verify`：文件存在且包含指定字符串才算对上，用于防止认错仓
 - `identifiers` / `platforms` 会与云端 `AppProduct` 的标识交叉核对
 
+## 队列结构
+
+`_queue.json` 按项目分组，每类单独一份：
+
+```json
+{
+  "generated_at": "2026-11-11T18:00:00+08:00",
+  "projects": {
+    "my-project": {
+      "runtime":  { "issues": [], "count": 0, "has_more": false },
+      "todo":     { "issues": [], "count": 0, "pages": 1 }
+    }
+  }
+}
+```
+
+- 单类拉取失败：该段是 `{"issues": [], "count": 0, "error": "..."}`，其他类不受影响；
+- 服务端还没提供某个工具：该段带 `"skipped": "服务端未提供 list_todos"`；
+- 待办行额外带 `ai_policy`：`auto` 可自动完成、`confirm` 只能认领/分析、`hold` 保留不动。
+
 ## 常用参数
 
 | 参数 | 说明 |
@@ -149,6 +199,17 @@ WorkBuddy / Claude / Cursor 等通用 JSON：
 - `1`：无法继续（缺账号 token、没有通过身份校验的仓库、整体拉取失败、`--date` 非法等）
 
 单仓身份不一致不会再让整晚中止：该仓被排除出拉取清单，报告里标红，其余健康仓继续。
+
+## 故障排查
+
+| 现象 | 处理 |
+|---|---|
+| `mcp-server: 缺少 token` | 确认 `~/.config/moo-fleet/mcp-token` 存在且权限 600；或显式传 `--token=` |
+| 客户端里看不到 Moo Cloud 工具 | 重启客户端；确认 `command`/`args` 路径可执行；先用手工 `printf` 验证桥 |
+| 生成的 `command` 路径不对 | 用 `--php="$(command -v php)"` 重新生成 |
+| `云端不可达` / 401 | 检查网络与 token 是否被吊销；`--cloud` 是否指向正确实例 |
+| 重复执行 `--write` 没变化 | 已有同名配置时默认跳过，需要覆盖加 `--force` |
+| 报告目录日期不对 | 日期按 Asia/Shanghai；可用 `--date=YYYY-MM-DD` 指定 |
 
 ## 安全
 
