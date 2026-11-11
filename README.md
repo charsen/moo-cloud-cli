@@ -46,6 +46,48 @@ cd /path/to/workspace
 
 报告正文模板见 `templates/report.md`。
 
+## 在 Codex / WorkBuddy / Claude 里使用
+
+CLI 自带一个本地 **stdio 桥** `bin/mcp-server`：客户端只需要 `command + args`，
+token 和云端地址由桥从本机读取（`~/.config/moo-fleet/mcp-token`），不用逐客户端配 URL / Bearer。
+
+一键写入配置：
+
+```bash
+php bin/agent-config --target=codex --write      # ~/.codex/config.toml
+php bin/agent-config --target=workbuddy --write  # ~/.workbuddy/mcp.json
+php bin/agent-config --target=json               # 通用 {mcpServers:{...}}
+```
+
+只打印不落盘就去掉 `--write`；`--force` 覆盖同名项，`--home=<dir>` 可演练到临时目录，
+`--php=<path>` 指定解释器（默认用稳定的 `php` 路径，避免 Homebrew Cellar 升级后失效）。
+
+生成的 Codex 片段：
+
+```toml
+[mcp_servers.moo_cloud]
+command = "/opt/homebrew/bin/php"
+args = ["/path/to/moo-cloud-cli/bin/mcp-server"]
+```
+
+WorkBuddy / Claude / Cursor 等通用 JSON：
+
+```json
+{
+  "mcpServers": {
+    "moo-cloud": {
+      "type": "stdio",
+      "command": "/opt/homebrew/bin/php",
+      "args": ["/path/to/moo-cloud-cli/bin/mcp-server"]
+    }
+  }
+}
+```
+
+桥的行为：stdin 每行一条 JSON-RPC，原样转发到云端 `/api/v1/mcp`；有 `id` 的写回一行，
+通知不写 stdout；网络失败返回同 `id` 的 JSON-RPC error。写入配置前会备份原文件，
+重复执行不会重复添加。
+
 ## 仓库标记：`.moo-cloud.json`
 
 在每个待纳管的仓库**根目录**放一份。两种角色：

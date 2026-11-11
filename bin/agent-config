@@ -1,0 +1,205 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+/*
+ * moo-cloud-cli agent-config —— 为 Codex / WorkBuddy / Claude 等生成 MCP 配置。
+ *
+ * 所有客户端都指向 bin/mcp-server（本地 stdio 桥），因此配置里没有 token：
+ *   command = php
+ *   args    = [/abs/path/bin/mcp-server]
+ *
+ * 用法：
+ *   bin/agent-config --target=codex        # 打印 TOML 片段
+ *   bin/agent-config --target=workbuddy    # 打印 JSON 片段
+ *   bin/agent-config --target=codex --write   # 合并进 ~/.codex/config.toml
+ *   bin/agent-config --target=workbuddy --write # 合并进 ~/.workbuddy/mcp.json
+ *   bin/agent-config --target=json         # 通用 {mcpServers:{...}}
+ *
+ * --home=<dir> 可覆盖 HOME（用于演练/测试）；--force 覆盖同名已有配置。
+ */
+
+date_default_timezone_set('Asia/Shanghai');
+
+exit(main(array_slice($argv, 1)));
+
+function main(array $args): int
+{
+    $opts = parseOptions($args);
+    $home = $opts['home'] !== '' ? rtrim($opts['home'], '/') : (getenv('HOME') ?: '');
+    $server = realpath(__DIR__.'/mcp-server');
+    if ($server === false) {
+        fwrite(STDERR, "找不到 bin/mcp-server\n");
+
+        return 1;
+    }
+
+    $command = $opts['php'] !== '' ? $opts['php'] : stablePhp();
+    $target = $opts['target'];
+
+    if ($target === 'codex') {
+        return emitCodex($home, $command, $server, $opts);
+    }
+    if ($target === 'workbuddy') {
+        return emitWorkbuddy($home, $command, $server, $opts);
+    }
+    if ($target === 'json' || $target === 'claude') {
+        echo json_encode(
+            ['mcpServers' => ['moo-cloud' => serverEntry($command, $server)]],
+            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT,
+        )."\n";
+
+        return 0;
+    }
+
+    fwrite(STDERR, "未知 target：{$target}（支持 codex / workbuddy / json / claude）\n");
+
+    return 1;
+}
+
+/** @return array<string, mixed> */
+function serverEntry(string $command, string $server): array
+{
+    return [
+        'type' => 'stdio',
+        'command' => $command,
+        'args' => [$server],
+        'description' => 'Moo Cloud：项目异常与待办（账号级 MCP）',
+    ];
+}
+
+/** @param  array<string, mixed>  $opts */
+function emitCodex(string $home, string $command, string $server, array $opts): int
+{
+    $block = "[mcp_servers.moo_cloud]\n"
+        .'command = '.tomlString($command)."\n"
+        .'args = ['.tomlString($server)."]\n";
+
+    if (! $opts['write']) {
+        echo $block;
+
+        return 0;
+    }
+
+    $file = $home.'/.codex/config.toml';
+    $existing = is_file($file) ? (string) file_get_contents($file) : '';
+    if (str_contains($existing, '[mcp_servers.moo_cloud]') && ! $opts['force']) {
+        fwrite(STDERR, "已存在 [mcp_servers.moo_cloud]，未改动（--force 可覆盖）\n");
+
+        return 0;
+    }
+    if (str_contains($existing, '[mcp_servers.moo_cloud]') && $opts['force']) {
+        $existing = preg_replace('/\[mcp_servers\.moo_cloud\][^\[]*/', '', $existing) ?? $existing;
+    }
+
+    backup($file);
+    writeFile($file, rtrim($existing)."\n\n".$block);
+
+    fwrite(STDERR, "已写入 {$file}\n");
+
+    return 0;
+}
+
+/** @param  array<string, mixed>  $opts */
+function emitWorkbuddy(string $home, string $command, string $server, array $opts): int
+{
+    $entry = serverEntry($command, $server);
+    $entry['type'] = 'stdio';
+
+    if (! $opts['write']) {
+        echo json_encode(
+            ['mcpServers' => ['moo-cloud' => $entry]],
+            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT,
+        )."\n";
+
+        return 0;
+    }
+
+    $file = $home.'/.workbuddy/mcp.json';
+    $data = [];
+    if (is_file($file)) {
+        $decoded = json_decode((string) file_get_contents($file), true);
+        if (! is_array($decoded)) {
+            fwrite(STDERR, "{$file} 不是合法 JSON，拒绝覆盖\n");
+
+            return 1;
+        }
+        $data = $decoded;
+    }
+
+    $data['mcpServers'] = is_array($data['mcpServers'] ?? null) ? $data['mcpServers'] : [];
+    if (isset($data['mcpServers']['moo-cloud']) && ! $opts['force']) {
+        fwrite(STDERR, "已存在 mcpServers.moo-cloud，未改动（--force 可覆盖）\n");
+
+        return 0;
+    }
+    $data['mcpServers']['moo-cloud'] = $entry;
+
+    backup($file);
+    writeFile($file, json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT)."\n");
+
+    fwrite(STDERR, "已写入 {$file}\n");
+
+    return 0;
+}
+
+function backup(string $file): void
+{
+    if (is_file($file)) {
+        copy($file, $file.'.bak-'.date('YmdHis'));
+    }
+}
+
+function writeFile(string $file, string $content): void
+{
+    if (! is_dir(dirname($file))) {
+        mkdir(dirname($file), 0775, true);
+    }
+    file_put_contents($file, $content);
+}
+
+/** Homebrew 的 PHP_BINARY 带 Cellar 版本号，升级后路径会消失；优先用稳定的 bin 链接。 */
+function stablePhp(): string
+{
+    $bin = PHP_BINARY;
+    if (str_contains($bin, '/Cellar/')) {
+        $stable = '/opt/homebrew/bin/php';
+        if (is_executable($stable)) {
+            return $stable;
+        }
+    }
+
+    return $bin;
+}
+
+function tomlString(string $value): string
+{
+    return '"'.addcslashes($value, "\\\"\n\r\t").'"';
+}
+
+/** @return array{target: string, write: bool, force: bool, home: string} */
+function parseOptions(array $args): array
+{
+    $opts = ['target' => 'codex', 'write' => false, 'force' => false, 'home' => '', 'php' => ''];
+
+    foreach ($args as $arg) {
+        if (! str_starts_with($arg, '--')) {
+            continue;
+        }
+        [$key, $value] = array_pad(explode('=', substr($arg, 2), 2), 2, true);
+
+        if ($key === 'write' || $key === 'force') {
+            $opts[$key] = is_string($value)
+                ? (filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? true)
+                : true;
+
+            continue;
+        }
+        if (array_key_exists($key, $opts) && is_string($value)) {
+            $opts[$key] = $value;
+        }
+    }
+
+    return $opts;
+}
