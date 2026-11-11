@@ -34,7 +34,7 @@ cd /path/to/workspace
 ~/tools/moo-cloud-cli/bin/preflight --fetch       # 校验 + 拉队列
 ```
 
-输出默认在 `<工作区>/moo-fix-reports/<日期>/`：
+输出默认在 `<工作区>/moo-cloud-reports/<日期>/`：
 
 | 文件 | 内容 |
 |---|---|
@@ -91,7 +91,7 @@ cd /path/to/workspace
 |---|---|
 | `--root=<dir>` | 工作区根目录，默认当前目录 |
 | `--date=YYYY-MM-DD` | 输出日期目录，默认上海当天 |
-| `--out=<dir>` | 输出目录，默认 `<root>/moo-fix-reports/<date>` |
+| `--out=<dir>` | 输出目录，默认 `<root>/moo-cloud-reports/<date>` |
 | `--offline` | 跳过云端身份校验 |
 | `--fetch` | 拉取待处理队列 |
 | `--token=` | 账号级 MCP token；默认读 `MOO_CLOUD_MCP_TOKEN` 或 `~/.config/moo-fleet/mcp-token` |

@@ -13,7 +13,7 @@ declare(strict_types=1);
  *   2. 拉取队列（--fetch）：用账号级 MCP（Bearer 个人 token）拉每个项目的
  *      runtime / slow_query / app_error 未处理项（env=production），写 _queue.json。
  *
- * 输出（默认 wwwroot/moo-fix-reports/<date>/）：
+ * 输出（默认 wwwroot/moo-cloud-reports/<date>/）：
  *   _preflight.json  机器可读的校验结果
  *   _preflight.md    人读摘要
  *   _queue.json      待处理问题（仅 --fetch）
@@ -43,7 +43,7 @@ moo-cloud-cli preflight —— 身份校验 + 拉取待处理队列
 
   --root=<dir>      工作区根目录（默认当前目录）
   --date=<Y-m-d>    输出日期目录（默认上海当天）
-  --out=<dir>       输出目录（默认 <root>/moo-fix-reports/<date>）
+  --out=<dir>       输出目录（默认 <root>/moo-cloud-reports/<date>）
   --offline         跳过云端身份校验
   --fetch           拉取 runtime / slow_query / frontend_error / app_error 队列
   --token=<token>   账号级 MCP token（默认 MOO_CLOUD_MCP_TOKEN 或 ~/.config/moo-fleet/mcp-token）
@@ -83,7 +83,7 @@ TXT);
         }
     }
 
-    $outDir = $opts['out'] ?: $opts['root'].'/moo-fix-reports/'.$opts['date'];
+    $outDir = $opts['out'] ?: $opts['root'].'/moo-cloud-reports/'.$opts['date'];
     if (! is_dir($outDir) && ! mkdir($outDir, 0775, true) && ! is_dir($outDir)) {
         fwrite(STDERR, "无法创建输出目录：{$outDir}\n");
 
