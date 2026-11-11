@@ -104,7 +104,10 @@ Cursor 等。Codex 写 `~/.codex/config.toml`（追加，不改其他段）；Wo
 
 写完配置后：
 
-1. **重启客户端**（Codex 退出重开；WorkBuddy 重新加载 MCP / 重启应用）；
+1. **Codex**：退出重开即生效；生成的配置会对 8 个只读工具自动批准，
+   `resolve_issue` / `update_todo_status` 仍会请求人工批准。
+   **WorkBuddy**：重启后还要在「MCP / 连接器」面板里把 `moo-cloud` 启用一次
+   （`wb:mcp:setEnabled`），否则 daemon 不会加载它；启用后能看到 10 个工具。
 2. 在客户端里问「列出 Moo Cloud 的项目」或直接看工具列表，应出现
    `list_projects` / `list_issues` / `get_todo` / `resolve_issue` 等；
 3. 不放心可以先手工验证桥：
