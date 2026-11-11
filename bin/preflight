@@ -4,7 +4,7 @@
 declare(strict_types=1);
 
 /*
- * moo-fix preflight —— 夜间修复闭环的「先验证，再动手」环节（独立 CLI，不依赖任何项目仓）。
+ * moo-cloud-cli preflight —— 夜间修复闭环的「先验证，再动手」环节（独立 CLI，不依赖任何项目仓）。
  *
  * 它只做两件事，但都是闭环里最容易出错的：
  *   1. 身份校验：读每个仓库根的 .moo-cloud.json，用该部署 env 文件里的 host token
@@ -37,7 +37,7 @@ function main(array $args): int
 {
     if (in_array('--help', $args, true) || in_array('-h', $args, true)) {
         fwrite(STDOUT, <<<'TXT'
-moo-fix preflight —— 身份校验 + 拉取待处理队列
+moo-cloud-cli preflight —— 身份校验 + 拉取待处理队列
 
 用法: bin/preflight [选项]
 

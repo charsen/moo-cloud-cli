@@ -1,4 +1,4 @@
-# moo-fix
+# moo-cloud-cli
 
 夜间修复流程的**独立**命令行工具，不依赖任何具体项目仓，可直接分享给同事。
 
@@ -21,7 +21,7 @@
 
 ```bash
 # 1. 放到任意位置
-git clone <repo> ~/tools/moo-fix
+git clone <repo> ~/tools/moo-cloud-cli
 
 # 2. 存 token（只读一次，权限 600）
 mkdir -p ~/.config/moo-fleet
@@ -30,8 +30,8 @@ chmod 600 ~/.config/moo-fleet/mcp-token
 
 # 3. 在工作区根目录执行
 cd /path/to/workspace
-~/tools/moo-fix/bin/preflight --offline     # 先只做本地校验
-~/tools/moo-fix/bin/preflight --fetch       # 校验 + 拉队列
+~/tools/moo-cloud-cli/bin/preflight --offline     # 先只做本地校验
+~/tools/moo-cloud-cli/bin/preflight --fetch       # 校验 + 拉队列
 ```
 
 输出默认在 `<工作区>/moo-fix-reports/<日期>/`：
