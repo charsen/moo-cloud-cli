@@ -92,16 +92,19 @@ TXT);
     }
 
     $queue = null;
+    $queueError = null;
     if ($opts['fetch']) {
         if ($opts['token'] === '') {
             fwrite(STDERR, "--fetch 需要账号级 token：--token=moo_pat_xxx 或环境变量 MOO_CLOUD_MCP_TOKEN\n");
             $hardFailures++;
+            $queueError = '缺少账号级 token';
         } else {
             try {
                 $queue = fetchQueue($opts, array_keys($projectSet));
             } catch (Throwable $e) {
                 fwrite(STDERR, '拉取队列失败：'.$e->getMessage()."\n");
                 $hardFailures++;
+                $queueError = $e->getMessage();
             }
         }
     }
@@ -122,6 +125,14 @@ TXT);
         file_put_contents($outDir.'/_queue.json', json_encode([
             'generated_at' => date('c'),
             'projects' => $queue,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT)."\n");
+    } elseif ($opts['fetch']) {
+        // 失败也要落一份带 error 的队列：否则同一日期目录里上一轮的 _queue.json
+        // 会被下游当成今天的结果读走（陈旧数据比没有数据更危险）。
+        file_put_contents($outDir.'/_queue.json', json_encode([
+            'generated_at' => date('c'),
+            'error' => $queueError ?? '拉取失败',
+            'projects' => [],
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT)."\n");
     }
 
@@ -187,6 +198,14 @@ function parseOptions(array $args): array
         }
 
         $opts[$key] = $value;
+    }
+
+    // --fetch / --offline 支持 --flag=false：字符串 "false"/"0" 不能被当成真。
+    foreach (['offline', 'fetch'] as $flag) {
+        if (is_string($opts[$flag])) {
+            $parsed = filter_var($opts[$flag], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+            $opts[$flag] = $parsed ?? true;   // 无值或未知值按「打开」处理
+        }
     }
 
     return $opts;
@@ -290,7 +309,9 @@ function applyGitState(string $appRoot, string $repoRoot, array &$report): void
     $markerUntracked = false;
     $codeLines = [];
     foreach ($statusLines as $line) {
-        if (str_contains($line, '.moo-cloud.json')) {
+        // 只有「未跟踪」的 marker 才豁免（它由工具生成）；已跟踪但被改的 marker
+        // 属于真实工作区改动，必须计入 dirty，否则 nightly 会误判仓库干净。
+        if (str_starts_with($line, '??') && str_contains($line, '.moo-cloud.json')) {
             $markerUntracked = true;
 
             continue;
@@ -638,6 +659,10 @@ function mcpTools(string $cloud, string $token): array
  */
 function fetchQueue(array $opts, array $projects): array
 {
+    if (! is_numeric($opts['limit'])) {
+        fwrite(STDERR, "警告：--limit 不是数字（{$opts['limit']}），使用默认 5\n");
+        $opts['limit'] = '5';
+    }
     $limit = max(1, min(50, (int) $opts['limit']));
     // --cloud 缺省时用生产地址；显式传入则覆盖（本地演练/自建实例）。
     $cloud = $opts['cloud'] !== '' ? $opts['cloud'] : 'https://c.mooeen.com';
