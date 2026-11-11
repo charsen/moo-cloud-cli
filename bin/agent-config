@@ -73,9 +73,17 @@ function serverEntry(string $command, string $server): array
 /** @param  array<string, mixed>  $opts */
 function emitCodex(string $home, string $command, string $server, array $opts): int
 {
+    // 只对只读工具自动批准；resolve_issue / update_todo_status 仍走人工批准。
+    $readTools = [
+        'list_projects', 'list_issues', 'get_issue', 'get_issue_markdown',
+        'list_apps', 'list_todos', 'get_todo', 'get_todo_image',
+    ];
     $block = "[mcp_servers.moo_cloud]\n"
         .'command = '.tomlString($command)."\n"
         .'args = ['.tomlString($server)."]\n";
+    foreach ($readTools as $tool) {
+        $block .= "\n[mcp_servers.moo_cloud.tools.{$tool}]\napproval_mode = \"approve\"\n";
+    }
 
     if (! $opts['write']) {
         echo $block;
@@ -91,7 +99,7 @@ function emitCodex(string $home, string $command, string $server, array $opts): 
         return 0;
     }
     if (str_contains($existing, '[mcp_servers.moo_cloud]') && $opts['force']) {
-        $existing = preg_replace('/\[mcp_servers\.moo_cloud\][^\[]*/', '', $existing) ?? $existing;
+        $existing = stripCodexBlock($existing);
     }
 
     backup($file);
@@ -143,6 +151,25 @@ function emitWorkbuddy(string $home, string $command, string $server, array $opt
     fwrite(STDERR, "已写入 {$file}\n");
 
     return 0;
+}
+
+/** 删除整段 moo_cloud 配置（含 tools 子表），保留其后的其他 server。 */
+function stripCodexBlock(string $toml): string
+{
+    $kept = [];
+    $skip = false;
+    foreach (explode("\n", $toml) as $line) {
+        $trim = ltrim($line);
+        if (str_starts_with($trim, '[')) {
+            $skip = str_starts_with($trim, '[mcp_servers.moo_cloud]')
+                || str_starts_with($trim, '[mcp_servers.moo_cloud.');
+        }
+        if (! $skip) {
+            $kept[] = $line;
+        }
+    }
+
+    return trim(implode("\n", $kept))."\n";
 }
 
 function backup(string $file): void
