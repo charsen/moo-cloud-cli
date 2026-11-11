@@ -61,6 +61,13 @@ TXT);
 
     $opts = parseOptions($args);
 
+    // --date 参与输出路径拼接，必须是纯日期，避免写出意料之外的目录。
+    if (! preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) $opts['date'])) {
+        fwrite(STDERR, "--date 需为 YYYY-MM-DD\n");
+
+        return 1;
+    }
+
     $markers = findMarkers($opts['root']);
     if ($markers === []) {
         fwrite(STDERR, "未找到任何 .moo-cloud.json（root={$opts['root']}）\n");
@@ -93,17 +100,25 @@ TXT);
 
     $queue = null;
     $queueError = null;
+    // fatal = 整次运行无法继续（无 token / 无通过校验的仓库 / 整体拉取失败）；
+    // 单仓身份失败只记 hard_failures 并跳过该仓，其他健康仓照常处理。
+    $fatal = 0;
     if ($opts['fetch']) {
+        $projects = array_keys($projectSet);
         if ($opts['token'] === '') {
             fwrite(STDERR, "--fetch 需要账号级 token：--token=moo_pat_xxx 或环境变量 MOO_CLOUD_MCP_TOKEN\n");
-            $hardFailures++;
+            $fatal++;
             $queueError = '缺少账号级 token';
+        } elseif ($projects === []) {
+            fwrite(STDERR, "没有通过身份校验的仓库，无法拉取\n");
+            $fatal++;
+            $queueError = '没有通过身份校验的仓库';
         } else {
             try {
-                $queue = fetchQueue($opts, array_keys($projectSet));
+                $queue = fetchQueue(resolveFetchCloud($opts, $reports), $opts, $projects);
             } catch (Throwable $e) {
                 fwrite(STDERR, '拉取队列失败：'.$e->getMessage()."\n");
-                $hardFailures++;
+                $fatal++;
                 $queueError = $e->getMessage();
             }
         }
@@ -114,6 +129,7 @@ TXT);
         'mode' => $opts['offline'] ? 'offline' : 'online',
         'root' => $opts['root'],
         'hard_failures' => $hardFailures,
+        'fatal' => $fatal,
         'repos' => $reports,
         'queue_projects' => $queue === null ? null : array_keys($queue),
     ];
@@ -137,15 +153,16 @@ TXT);
     }
 
     fwrite(STDOUT, sprintf(
-        "preflight: %d 个仓库, 硬失败 %d, 模式 %s%s\n输出: %s\n",
+        "preflight: %d 个仓库, 硬失败 %d, 致命 %d, 模式 %s%s\n输出: %s\n",
         count($reports),
         $hardFailures,
+        $fatal,
         $payload['mode'],
         $opts['fetch'] ? ' + fetch' : '',
         $outDir
     ));
 
-    return $hardFailures > 0 ? 1 : 0;
+    return $fatal > 0 ? 1 : 0;
 }
 
 /** 依次尝试环境变量与约定文件；读不到就空（--fetch 时会明确报错）。 */
@@ -428,7 +445,12 @@ function inspectDeployment(string $appRoot, string $remote, mixed $dep, array $o
         return $entry;
     }
 
-    $cloud = $opts['cloud'] !== '' ? $opts['cloud'] : (envValue($envPath, 'MOO_MONITOR_CLOUD_URL') ?: 'https://c.mooeen.com');
+    $cloud = rtrim(
+        $opts['cloud'] !== '' ? $opts['cloud'] : (envValue($envPath, 'MOO_MONITOR_CLOUD_URL') ?: 'https://c.mooeen.com'),
+        '/',
+    );
+    // 记下来供 resolveFetchCloud 统一决策：身份校验可以与拉取指向同一云端。
+    $entry['cloud'] = $cloud;
 
     if ($opts['offline']) {
         $entry['ok'] = true;
@@ -504,7 +526,16 @@ function envValue(string $file, string $key): ?string
 
         $value = trim(substr($line, strlen($key) + 1));
 
-        return trim($value, "\"'");
+        // 引号值原样返回；裸值截掉行内注释（dotenv 的 `TOKEN=abc # 说明` 形态）。
+        if ($value !== '' && ($value[0] === '"' || $value[0] === "'")) {
+            return trim($value, "\"'");
+        }
+        $hash = strpos($value, ' #');
+        if ($hash !== false) {
+            $value = substr($value, 0, $hash);
+        }
+
+        return trim($value);
     }
 
     return null;
@@ -654,18 +685,91 @@ function mcpTools(string $cloud, string $token): array
 }
 
 /**
+ * frontend_error / app_error 要先在本地按 env 过滤，但服务端只能按 limit 截断。
+ * 先截断再过滤会让生产行被 dev/debug 噪音挡在页外，所以按 offset 翻页，
+ * 直到过滤后够 limit；最多 10 页，避免噪音极端时无限翻。
+ *
+ * @return array<string, mixed>
+ */
+function fetchIssuesPaged(string $cloud, string $token, string $project, string $type, int $limit): array
+{
+    $collected = [];
+    $offset = 0;
+    $pages = 0;
+    $last = ['issues' => [], 'count' => 0, 'has_more' => false, 'pages' => 0];
+
+    while (count($collected) < $limit && $pages < 10) {
+        $result = mcpCall($cloud, $token, 'list_issues', [
+            'project' => $project,
+            'type' => $type,
+            'limit' => $limit,
+            'offset' => $offset,
+        ]);
+        $last = $result;
+        $rows = $result['issues'] ?? [];
+        $collected = array_merge($collected, filterIssues($type, $rows));
+        $pages++;
+
+        if (empty($result['has_more']) || $rows === []) {
+            break;
+        }
+        $offset += count($rows);
+    }
+
+    $collected = array_slice($collected, 0, $limit);
+    $last['issues'] = $collected;
+    $last['count'] = count($collected);
+    $last['has_more'] = false;
+    $last['pages'] = $pages;
+
+    return $last;
+}
+
+/**
+ * 身份校验用的云端可能与拉取目标不同：显式 --cloud 优先；否则所有部署指向同一
+ * 云端时沿用该地址；指向多个云端且没显式指定则直接报错，避免「在 A 校验、去 B 拉」。
+ *
+ * @param  array<string, mixed>  $opts
+ * @param  list<array<string, mixed>>  $reports
+ */
+function resolveFetchCloud(array $opts, array $reports): string
+{
+    $explicit = rtrim((string) $opts['cloud'], '/');
+    if ($explicit !== '') {
+        return $explicit;
+    }
+
+    $clouds = [];
+    foreach ($reports as $repo) {
+        foreach ($repo['deployments'] as $dep) {
+            $cloud = rtrim((string) ($dep['cloud'] ?? ''), '/');
+            if ($cloud !== '') {
+                $clouds[$cloud] = true;
+            }
+        }
+    }
+
+    if (count($clouds) > 1) {
+        throw new RuntimeException('部署指向多个云端（'.implode('、', array_keys($clouds)).'），请用 --cloud 指定拉取目标');
+    }
+    if (count($clouds) === 1) {
+        return (string) array_key_first($clouds);
+    }
+
+    return 'https://c.mooeen.com';
+}
+
+/**
  * @param  list<string>  $projects
  * @return array<string, array<string, mixed>>
  */
-function fetchQueue(array $opts, array $projects): array
+function fetchQueue(string $cloud, array $opts, array $projects): array
 {
     if (! is_numeric($opts['limit'])) {
         fwrite(STDERR, "警告：--limit 不是数字（{$opts['limit']}），使用默认 5\n");
         $opts['limit'] = '5';
     }
     $limit = max(1, min(50, (int) $opts['limit']));
-    // --cloud 缺省时用生产地址；显式传入则覆盖（本地演练/自建实例）。
-    $cloud = $opts['cloud'] !== '' ? $opts['cloud'] : 'https://c.mooeen.com';
     $queue = [];
 
     // list_projects 先跑一次：既确认 token 能用，也拿到云端当前的项目清单做对照。
@@ -721,9 +825,15 @@ function fetchQueue(array $opts, array $projects): array
                 $query['env'] = 'production';
             }
 
-                $result = mcpCall($cloud, $opts['token'], 'list_issues', $query);
-                $result['issues'] = filterIssues($type, $result['issues'] ?? []);
-                $result['count'] = count($result['issues']);
+                // frontend/app 需要本地 env 过滤，必须先翻页补足再截断（见 fetchIssuesPaged）；
+                // runtime / slow_query 已在服务端按 production 过滤，单次取即可。
+                if (in_array($type, ['frontend_error', 'app_error'], true)) {
+                    $result = fetchIssuesPaged($cloud, $opts['token'], $project, $type, $limit);
+                } else {
+                    $result = mcpCall($cloud, $opts['token'], 'list_issues', $query);
+                    $result['issues'] = $result['issues'] ?? [];
+                    $result['count'] = count($result['issues']);
+                }
                 $queue[$project][$type] = $result;
             } catch (Throwable $e) {
                 // 单类型失败（服务端字段/工具未就绪、单次超时）只跳过该类，其他类型照常产出。
