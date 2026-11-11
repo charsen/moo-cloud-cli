@@ -666,20 +666,26 @@ function fetchQueue(array $opts, array $projects): array
                 continue;
             }
 
-            // 待办是独立工具：没有 env 语义，key 是 ULID。
-            if ($type === 'todo') {
-                $result = mcpCall($cloud, $opts['token'], 'list_todos', [
-                    'project' => $project,
-                    'limit' => $limit,
-                ]);
-                $result['issues'] = $result['todos'] ?? [];
-                $result['count'] = count($result['issues']);
-                $queue[$project][$type] = $result;
+            try {
+                // 待办是独立工具：没有 env 语义，key 是 ULID。
+                if ($type === 'todo') {
+                    $result = mcpCall($cloud, $opts['token'], 'list_todos', [
+                        'project' => $project,
+                        'limit' => $limit,
+                    ]);
+                    $result['issues'] = $result['todos'] ?? [];
+                    // 服务端旧版本可能还没有 ai_policy：缺失按 confirm（需人工确认）处理，宁可少做。
+                    foreach ($result['issues'] as &$todoRow) {
+                        $todoRow['ai_policy'] = $todoRow['ai_policy'] ?? 'confirm';
+                    }
+                    unset($todoRow);
+                    $result['count'] = count($result['issues']);
+                    $queue[$project][$type] = $result;
 
-                continue;
-            }
+                    continue;
+                }
 
-            // env 语义三类不同：
+                // env 语义三类不同：
             //   runtime / slow_query → local / production / testing
             //   frontend_error       → 渠道名（prod-huijia / dev-huijia / prod-wcl）
             //   app_error            → 构建类型（release / debug / verify）
@@ -690,10 +696,15 @@ function fetchQueue(array $opts, array $projects): array
                 $query['env'] = 'production';
             }
 
-            $result = mcpCall($cloud, $opts['token'], 'list_issues', $query);
-            $result['issues'] = filterIssues($type, $result['issues'] ?? []);
-            $result['count'] = count($result['issues']);
-            $queue[$project][$type] = $result;
+                $result = mcpCall($cloud, $opts['token'], 'list_issues', $query);
+                $result['issues'] = filterIssues($type, $result['issues'] ?? []);
+                $result['count'] = count($result['issues']);
+                $queue[$project][$type] = $result;
+            } catch (Throwable $e) {
+                // 单类型失败（服务端字段/工具未就绪、单次超时）只跳过该类，其他类型照常产出。
+                fwrite(STDERR, "警告：{$project} 的 {$type} 拉取失败，跳过：{$e->getMessage()}\n");
+                $queue[$project][$type] = ['issues' => [], 'count' => 0, 'error' => $e->getMessage()];
+            }
         }
     }
 
