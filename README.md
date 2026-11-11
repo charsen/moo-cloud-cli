@@ -6,7 +6,7 @@
 
 1. **身份校验**：扫描工作区里的 `.moo-cloud.json`，确认「本地目录 = 云端项目」，
    并把「工作区脏 / 在基础分支 / 云端 repo_url 未填」这类风险先标出来；
-2. **拉取队列**：用账号级 MCP token 拉取各项目未处理的 runtime / 慢 SQL / 前端错误 / App 错误，
+2. **拉取队列**：用账号级 MCP token 拉取各项目未处理的 runtime / 慢 SQL / 前端错误 / App 错误 / 待办，
    输出一份可以直接喂给 AI 的队列文件。
 
 > 是否自动改代码由调用方决定；本工具只负责「先验证，再取数」。
@@ -94,6 +94,7 @@ cd /path/to/workspace
 | `--out=<dir>` | 输出目录，默认 `<root>/moo-cloud-reports/<date>` |
 | `--offline` | 跳过云端身份校验 |
 | `--fetch` | 拉取待处理队列 |
+| `--types=` | 逗号分隔，默认 `runtime,slow_query,frontend_error,app_error,todo`；只拉感兴趣的类型 |
 | `--token=` | 账号级 MCP token；默认读 `MOO_CLOUD_MCP_TOKEN` 或 `~/.config/moo-fleet/mcp-token` |
 | `--cloud=` | cloud 地址，默认 `https://c.mooeen.com`（也接受 `MOO_CLOUD_URL`） |
 | `--limit=` | 每项目每类最多拉取条数（1–50，默认 5） |

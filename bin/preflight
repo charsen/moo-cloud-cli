@@ -45,7 +45,8 @@ moo-cloud-cli preflight —— 身份校验 + 拉取待处理队列
   --date=<Y-m-d>    输出日期目录（默认上海当天）
   --out=<dir>       输出目录（默认 <root>/moo-cloud-reports/<date>）
   --offline         跳过云端身份校验
-  --fetch           拉取 runtime / slow_query / frontend_error / app_error 队列
+  --fetch           拉取待处理队列（类型见 --types）
+  --types=<list>    逗号分隔，默认 runtime,slow_query,frontend_error,app_error,todo
   --token=<token>   账号级 MCP token（默认 MOO_CLOUD_MCP_TOKEN 或 ~/.config/moo-fleet/mcp-token）
   --cloud=<url>     cloud 地址（默认 https://c.mooeen.com）
   --limit=<n>       每项目每类最多拉取条数（1-50，默认 5）
@@ -167,6 +168,7 @@ function parseOptions(array $args): array
         // 显式传入时覆盖 env / 缺省地址（本地演练、自建实例用）。
         'cloud' => getenv('MOO_CLOUD_URL') ?: '',
         'limit' => '5',
+        'types' => 'runtime,slow_query,frontend_error,app_error,todo',
     ];
 
     foreach ($args as $arg) {
@@ -568,6 +570,21 @@ function mcpCall(string $cloud, string $token, string $tool, array $args): array
     return $data;
 }
 
+/** @return list<string> */
+function parseTypes(string $raw): array
+{
+    $allowed = ['runtime', 'slow_query', 'frontend_error', 'app_error', 'todo'];
+    $types = array_values(array_filter(array_map('trim', explode(',', $raw))));
+
+    foreach ($types as $type) {
+        if (! in_array($type, $allowed, true)) {
+            fwrite(STDERR, "忽略未知类型：{$type}\n");
+        }
+    }
+
+    return array_values(array_intersect($types, $allowed));
+}
+
 /**
  * 按类型筛掉明显不是线上故障的记录。
  *
@@ -620,8 +637,21 @@ function fetchQueue(array $opts, array $projects): array
         }
 
         $queue[$project] = [];
-        foreach (['runtime', 'slow_query', 'frontend_error', 'app_error'] as $type) {
-            // env 语义四类不同：
+        foreach (parseTypes((string) $opts['types']) as $type) {
+            // 待办是独立工具：没有 env 语义，key 是 ULID。
+            if ($type === 'todo') {
+                $result = mcpCall($cloud, $opts['token'], 'list_todos', [
+                    'project' => $project,
+                    'limit' => $limit,
+                ]);
+                $result['issues'] = $result['todos'] ?? [];
+                $result['count'] = count($result['issues']);
+                $queue[$project][$type] = $result;
+
+                continue;
+            }
+
+            // env 语义三类不同：
             //   runtime / slow_query → local / production / testing
             //   frontend_error       → 渠道名（prod-huijia / dev-huijia / prod-wcl）
             //   app_error            → 构建类型（release / debug / verify）
@@ -686,17 +716,19 @@ function renderMarkdown(array $payload, ?array $queue): string
     }
 
     if ($queue !== null) {
-        $lines[] = '## 待处理队列（env=production，每类按 --limit 截断）';
+        $lines[] = '## 待处理队列（每类按 --limit 截断）';
         $lines[] = '';
-        $lines[] = '| 项目 | runtime | slow_query | app_error |';
-        $lines[] = '|---|---:|---:|---:|';
+        $lines[] = '| 项目 | runtime | slow_query | frontend | app | todo |';
+        $lines[] = '|---|---:|---:|---:|---:|---:|';
         foreach ($queue as $project => $types) {
             $lines[] = sprintf(
-                '| %s | %d | %d | %d |',
+                '| %s | %d | %d | %d | %d | %d |',
                 $project,
                 count($types['runtime']['issues'] ?? []),
                 count($types['slow_query']['issues'] ?? []),
-                count($types['app_error']['issues'] ?? [])
+                count($types['frontend_error']['issues'] ?? []),
+                count($types['app_error']['issues'] ?? []),
+                count($types['todo']['issues'] ?? [])
             );
         }
     }
