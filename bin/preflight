@@ -214,6 +214,13 @@ function parseOptions(array $args): array
             continue;
         }
 
+        // 取值参数写成裸 --root 时不能把 bool 塞进路径，直接忽略并告警。
+        if ($value === true && ! in_array($key, ['offline', 'fetch'], true)) {
+            fwrite(STDERR, "参数 --{$key} 缺少值，已忽略（保持默认）\n");
+
+            continue;
+        }
+
         $opts[$key] = $value;
     }
 
@@ -771,6 +778,10 @@ function fetchQueue(string $cloud, array $opts, array $projects): array
     }
     $limit = max(1, min(50, (int) $opts['limit']));
     $queue = [];
+    $types = parseTypes((string) $opts['types']);
+    if ($types === []) {
+        throw new RuntimeException('没有可拉取的类型（--types）');
+    }
 
     // list_projects 先跑一次：既确认 token 能用，也拿到云端当前的项目清单做对照。
     $known = array_column(mcpCall($cloud, $opts['token'], 'list_projects', [])['projects'] ?? [], 'slug');
@@ -786,7 +797,7 @@ function fetchQueue(string $cloud, array $opts, array $projects): array
         }
 
         $queue[$project] = [];
-        foreach (parseTypes((string) $opts['types']) as $type) {
+        foreach ($types as $type) {
             $tool = $type === 'todo' ? 'list_todos' : 'list_issues';
             if (! in_array($tool, $available, true)) {
                 fwrite(STDERR, "警告：服务端未提供 {$tool}，跳过 {$project} 的 {$type}\n");

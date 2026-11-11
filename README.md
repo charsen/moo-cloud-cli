@@ -193,6 +193,9 @@ printf '%s
 | `--cloud=` | cloud 地址，默认 `https://c.mooeen.com`（也接受 `MOO_CLOUD_URL`） |
 | `--limit=` | 每项目每类最多拉取条数（1–50，默认 5）；frontend/app 会翻页补足后再截断 |
 
+取值参数必须带 `=`（裸写 `--root` 会被忽略并告警）；`--types=` 为空或全是未知类型会直接失败，
+不会静默产出一份空队列。
+
 ## 退出码
 
 - `0`：正常，或只有单仓/单类告警——失败仓记录在 `_preflight.json`，其余仓照常拉取
@@ -210,6 +213,7 @@ printf '%s
 | `云端不可达` / 401 | 检查网络与 token 是否被吊销；`--cloud` 是否指向正确实例 |
 | 重复执行 `--write` 没变化 | 已有同名配置时默认跳过，需要覆盖加 `--force` |
 | 报告目录日期不对 | 日期按 Asia/Shanghai；可用 `--date=YYYY-MM-DD` 指定 |
+| 报“部署指向多个云端” | 各部署的 `MOO_MONITOR_CLOUD_URL` 不一致，用 `--cloud=` 显式指定拉取目标 |
 
 ## 安全
 

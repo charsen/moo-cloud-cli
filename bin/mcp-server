@@ -23,7 +23,13 @@ declare(strict_types=1);
 
 date_default_timezone_set('Asia/Shanghai');
 
-$opts = parseOptions(array_slice($argv, 1));
+$args = array_slice($argv, 1);
+if (in_array('--help', $args, true) || in_array('-h', $args, true)) {
+    fwrite(STDOUT, "mcp-server：把云端 HTTP MCP 包成本地 stdio MCP\n\n用法: bin/mcp-server [--token=...] [--cloud=...]\n");
+    exit(0);
+}
+
+$opts = parseOptions($args);
 $token = $opts['token'] !== '' ? $opts['token'] : initialToken();
 if ($token === '') {
     fwrite(STDERR, "mcp-server: 缺少 token（--token / MOO_CLOUD_MCP_TOKEN / ~/.config/moo-fleet/mcp-token）\n");
@@ -51,7 +57,11 @@ while (($line = fgets(STDIN)) !== false) {
     $id = $message['id'] ?? null;
     $response = forward($endpoint, $token, $line, $id);
 
-    if ($id !== null && $response !== null) {
+    if ($id !== null && is_array($response)) {
+        // 云端错误偶尔不带 id；补上请求 id，客户端才不会把它当成无主消息丢掉。
+        if (! isset($response['id'])) {
+            $response['id'] = $id;
+        }
         fwrite(STDOUT, json_encode($response, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)."\n");
         fflush(STDOUT);
     }
