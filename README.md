@@ -99,7 +99,7 @@ cd /path/to/workspace
 | `--types=` | 逗号分隔，默认 `runtime,slow_query,frontend_error,app_error`；待办单独跑 `--types=todo` |
 | `--token=` | 账号级 MCP token；默认读 `MOO_CLOUD_MCP_TOKEN` 或 `~/.config/moo-fleet/mcp-token` |
 | `--cloud=` | cloud 地址，默认 `https://c.mooeen.com`（也接受 `MOO_CLOUD_URL`） |
-| `--limit=` | 每项目每类最多拉取条数（1–50，默认 5） |
+| `--limit=` | 每项目每类最多拉取条数（1–50，默认 5）；frontend/app 会翻页补足后再截断 |
 
 ## 退出码
 
