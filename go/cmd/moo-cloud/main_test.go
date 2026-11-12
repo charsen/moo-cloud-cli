@@ -290,7 +290,7 @@ func TestFetchQueueViaMockMCP(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	queue, err := fetchQueue(srv.URL, pfOptions{token: "t", limit: "2", types: "frontend_error,todo"}, []string{"p1"})
+	queue, metrics, err := fetchQueue(srv.URL, pfOptions{token: "t", limit: "2", types: "frontend_error,todo"}, []string{"p1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,6 +302,9 @@ func TestFetchQueueViaMockMCP(t *testing.T) {
 	todos := p1["todo"].(map[string]any)["issues"].([]any)
 	if len(todos) != 1 || todos[0].(map[string]any)["ai_policy"] != "confirm" {
 		t.Fatalf("待办应默认 confirm：%+v", todos)
+	}
+	if metrics == nil || metrics.Projects["p1"].Types["todo"].Count != 1 {
+		t.Fatalf("指标未记录待办数量：%+v", metrics)
 	}
 }
 
@@ -346,7 +349,7 @@ func TestFetchQueueSkipsTypesOutOfScope(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	queue, err := fetchQueue(srv.URL, pfOptions{token: "t", limit: "5", types: "runtime,frontend_error"}, []string{"p1"})
+	queue, _, err := fetchQueue(srv.URL, pfOptions{token: "t", limit: "5", types: "runtime,frontend_error"}, []string{"p1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -408,7 +411,7 @@ func TestFetchQueueRespectsTypePolicies(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	queue, err := fetchQueue(srv.URL, pfOptions{token: "t", limit: "5", types: "runtime,slow_query"}, []string{"p1"})
+	queue, _, err := fetchQueue(srv.URL, pfOptions{token: "t", limit: "5", types: "runtime,slow_query"}, []string{"p1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +424,7 @@ func TestFetchQueueRespectsTypePolicies(t *testing.T) {
 }
 
 func TestFetchQueueEmptyTypes(t *testing.T) {
-	if _, err := fetchQueue("http://127.0.0.1:1", pfOptions{token: "t", types: ""}, []string{"p1"}); err == nil {
+	if _, _, err := fetchQueue("http://127.0.0.1:1", pfOptions{token: "t", types: ""}, []string{"p1"}); err == nil {
 		t.Fatal("空类型应报错")
 	}
 }

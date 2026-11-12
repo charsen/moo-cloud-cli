@@ -284,6 +284,30 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | ./m
 - 待办仍是逐条的 `ai_policy`（auto/confirm/hold）
 - 队列里 `confirm` 类型的结果会带 `"policy": "confirm"`，调度方据此不自动 resolve
 
+## 可观测性
+
+每次 `--fetch` 都会在输出目录写 `_metrics.json`：
+
+```json
+{
+  "generated_at": "...",
+  "mode": "online",
+  "metrics": {
+    "duration_ms": 8123,
+    "projects": {
+      "my-project": {
+        "duration_ms": 1204,
+        "types": { "runtime": { "count": 3, "duration_ms": 210 }, "todo": { "count": 0, "skipped": "不在处理范围" } }
+      }
+    }
+  }
+}
+```
+
+- `--metrics-log=<file>`：每跑一次追加一行 JSON，用于看趋势/失败率
+- MCP 桥加 `--log=<file>`：每次调用一行（method / tool / ok / duration_ms / error），默认关闭
+- 失败/跳过原因同时进 `_preflight.md` 与 `_queue.json`，不依赖日志猜
+
 ## 常用参数
 
 | 参数 | 说明 |

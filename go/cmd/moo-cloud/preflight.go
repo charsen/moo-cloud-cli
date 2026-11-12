@@ -13,6 +13,23 @@ import (
 	"time"
 )
 
+type typeMetric struct {
+	Count      int    `json:"count"`
+	Skipped    string `json:"skipped,omitempty"`
+	Error      string `json:"error,omitempty"`
+	DurationMs int64  `json:"duration_ms"`
+}
+
+type projectMetric struct {
+	DurationMs int64                 `json:"duration_ms"`
+	Types      map[string]typeMetric `json:"types"`
+}
+
+type fetchMetrics struct {
+	DurationMs int64                    `json:"duration_ms"`
+	Projects   map[string]projectMetric `json:"projects"`
+}
+
 type pfOptions struct {
 	root        string
 	date        string
@@ -22,6 +39,7 @@ type pfOptions struct {
 	limit       string
 	types       string
 	concurrency string
+	metricsLog  string
 	offline     bool
 	fetch       bool
 	json        bool
@@ -75,7 +93,7 @@ func runPreflight(args []string) int {
 
   --root=<dir>   --date=<Y-m-d>   --out=<dir>
   --offline      --fetch          --types=<list>
-  --token=       --cloud=         --limit=<n>   --concurrency=<n>   --json
+  --token=       --cloud=         --limit=<n>   --concurrency=<n>   --json   --metrics-log=<file>
 `)
 
 		return 0
@@ -124,6 +142,7 @@ func runPreflight(args []string) int {
 	}
 
 	var queue map[string]map[string]any
+	var metrics *fetchMetrics
 	queueError := ""
 	fatal := 0
 	if opts.fetch {
@@ -139,7 +158,7 @@ func runPreflight(args []string) int {
 		default:
 			cloud, err := resolveFetchCloud(opts, reports)
 			if err == nil {
-				queue, err = fetchQueue(cloud, opts, projectSet)
+				queue, metrics, err = fetchQueue(cloud, opts, projectSet)
 			}
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "拉取队列失败：%v\n", err)
@@ -172,6 +191,7 @@ func runPreflight(args []string) int {
 		"fatal":          fatal,
 		"repos":          reports,
 		"queue_projects": queueProjects,
+		"metrics":        metrics,
 	}
 
 	writeJSON(filepath.Join(outDir, "_preflight.json"), payload)
@@ -188,6 +208,19 @@ func runPreflight(args []string) int {
 			"error":        queueError,
 			"projects":     map[string]any{},
 		})
+	}
+
+	if opts.fetch {
+		metricsPayload := map[string]any{
+			"generated_at": time.Now().In(cst).Format(time.RFC3339),
+			"mode":         mode,
+			"metrics":      metrics,
+			"error":        queueError,
+		}
+		writeJSON(filepath.Join(outDir, "_metrics.json"), metricsPayload)
+		if opts.metricsLog != "" {
+			appendJSONLine(opts.metricsLog, metricsPayload)
+		}
 	}
 
 	if opts.json {
@@ -224,7 +257,7 @@ func parsePfOptions(args []string) pfOptions {
 	known := map[string]*string{
 		"root": &opts.root, "date": &opts.date, "out": &opts.out,
 		"token": &opts.token, "cloud": &opts.cloud, "limit": &opts.limit, "types": &opts.types,
-		"concurrency": &opts.concurrency,
+		"concurrency": &opts.concurrency, "metrics-log": &opts.metricsLog,
 	}
 
 	for _, arg := range args {
@@ -546,7 +579,9 @@ func resolveFetchCloud(opts pfOptions, reports []repoReport) (string, error) {
 	}
 }
 
-func fetchQueue(cloud string, opts pfOptions, projects []string) (map[string]map[string]any, error) {
+func fetchQueue(cloud string, opts pfOptions, projects []string) (map[string]map[string]any, *fetchMetrics, error) {
+	started := time.Now()
+
 	limit := 5
 	if n, err := strconv.Atoi(opts.limit); err == nil {
 		limit = n
@@ -562,12 +597,12 @@ func fetchQueue(cloud string, opts pfOptions, projects []string) (map[string]map
 
 	types := parseTypes(opts.types)
 	if len(types) == 0 {
-		return nil, fmt.Errorf("没有可拉取的类型（--types）")
+		return nil, nil, fmt.Errorf("没有可拉取的类型（--types）")
 	}
 
 	knownResp, err := mcpCall(cloud, opts.token, "list_projects", map[string]any{})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	known := []string{}
 	handled := map[string][]string{}
@@ -604,13 +639,14 @@ func fetchQueue(cloud string, opts pfOptions, projects []string) (map[string]map
 
 	available, err := mcpTools(cloud, opts.token)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	queue := map[string]map[string]any{}
-	// 项目间并发（最多 4 个），每个项目内部仍按类型顺序拉取；结果写回由 mutex 保护。
+	metrics := &fetchMetrics{Projects: map[string]projectMetric{}}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+
 	concurrency := 4
 	if n, err := strconv.Atoi(opts.concurrency); err == nil {
 		concurrency = n
@@ -636,17 +672,13 @@ func fetchQueue(cloud string, opts pfOptions, projects []string) (map[string]map
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
+			pstart := time.Now()
 			result := map[string]any{}
+			pm := projectMetric{Types: map[string]typeMetric{}}
+
 			for _, typ := range types {
-				// 账号默认 + 项目覆盖后的范围；服务端旧版本没有该字段时按全部处理。
-				if scope, ok := handled[project]; ok && !contains(scope, typ) {
-					result[typ] = map[string]any{"issues": []any{}, "count": 0, "skipped": "不在处理范围"}
-
-					continue
-				}
-
-				// 问题类策略：hold 完全不处理；confirm 仍拉取，但结果标注 policy，
-				// 由调度方修复后不自动 resolve。
+				tstart := time.Now()
+				// 策略：hold 完全不处理；confirm 仍拉取，但结果标注 policy。
 				policy := "auto"
 				if typ != "todo" {
 					if mapped, ok := policies[project]; ok {
@@ -657,6 +689,14 @@ func fetchQueue(cloud string, opts pfOptions, projects []string) (map[string]map
 				}
 				if policy == "hold" {
 					result[typ] = map[string]any{"issues": []any{}, "count": 0, "skipped": "策略：保留不处理"}
+					pm.Types[typ] = typeMetric{Skipped: "策略：保留不处理"}
+
+					continue
+				}
+
+				if scope, ok := handled[project]; ok && !contains(scope, typ) {
+					result[typ] = map[string]any{"issues": []any{}, "count": 0, "skipped": "不在处理范围"}
+					pm.Types[typ] = typeMetric{Skipped: "不在处理范围"}
 
 					continue
 				}
@@ -668,6 +708,7 @@ func fetchQueue(cloud string, opts pfOptions, projects []string) (map[string]map
 				if !contains(available, tool) {
 					fmt.Fprintf(os.Stderr, "警告：服务端未提供 %s，跳过 %s 的 %s\n", tool, project, typ)
 					result[typ] = map[string]any{"issues": []any{}, "count": 0, "skipped": "服务端未提供 " + tool}
+					pm.Types[typ] = typeMetric{Skipped: "服务端未提供 " + tool}
 
 					continue
 				}
@@ -676,21 +717,27 @@ func fetchQueue(cloud string, opts pfOptions, projects []string) (map[string]map
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "警告：%s 的 %s 拉取失败，跳过：%v\n", project, typ, err)
 					result[typ] = map[string]any{"issues": []any{}, "count": 0, "error": err.Error()}
+					pm.Types[typ] = typeMetric{Error: err.Error()}
 
 					continue
 				}
 				one["policy"] = policy
 				result[typ] = one
+				pm.Types[typ] = typeMetric{Count: len(anySlice(one["issues"])), DurationMs: time.Since(tstart).Milliseconds()}
 			}
 
+			pm.DurationMs = time.Since(pstart).Milliseconds()
 			mu.Lock()
 			queue[project] = result
+			metrics.Projects[project] = pm
 			mu.Unlock()
 		}(project)
 	}
 
 	wg.Wait()
-	return queue, nil
+	metrics.DurationMs = time.Since(started).Milliseconds()
+
+	return queue, metrics, nil
 }
 
 func fetchOneType(cloud, token, project, typ string, limit int) (map[string]any, error) {

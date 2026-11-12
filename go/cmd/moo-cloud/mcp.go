@@ -20,6 +20,7 @@ func runMcpServer(args []string) int {
 
 	token := ""
 	cloud := ""
+	logPath := ""
 	for _, arg := range args {
 		key, value, ok := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
 		if !ok {
@@ -30,6 +31,8 @@ func runMcpServer(args []string) int {
 			token = value
 		case "cloud":
 			cloud = value
+		case "log":
+			logPath = value
 		}
 	}
 	if token == "" {
@@ -55,8 +58,12 @@ func runMcpServer(args []string) int {
 	for {
 		line, err := reader.ReadString('\n')
 		if len(line) > 0 {
-			handleMcpLine(cloud+"/api/v1/mcp", token, strings.TrimSpace(line), writer)
+			started := time.Now()
+			ok, errMsg := handleMcpLine(cloud+"/api/v1/mcp", token, strings.TrimSpace(line), writer)
 			writer.Flush()
+			if logPath != "" {
+				appendMcpLog(logPath, line, ok, errMsg, time.Since(started).Milliseconds())
+			}
 		}
 		if err != nil {
 			if err == io.EOF {
@@ -70,16 +77,16 @@ func runMcpServer(args []string) int {
 	return 0
 }
 
-func handleMcpLine(endpoint, token, line string, writer *bufio.Writer) {
+func handleMcpLine(endpoint, token, line string, writer *bufio.Writer) (bool, string) {
 	if line == "" {
-		return
+		return true, ""
 	}
 
 	var msg map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(line), &msg); err != nil {
 		fmt.Fprintln(os.Stderr, "mcp-server: 忽略非 JSON 输入")
 
-		return
+		return false, "invalid json"
 	}
 
 	rawID, hasID := msg["id"]
@@ -96,10 +103,10 @@ func handleMcpLine(endpoint, token, line string, writer *bufio.Writer) {
 			})
 		}
 
-		return
+		return false, err.Error()
 	}
 	if !hasID {
-		return
+		return true, ""
 	}
 
 	var response map[string]json.RawMessage
@@ -109,13 +116,39 @@ func handleMcpLine(endpoint, token, line string, writer *bufio.Writer) {
 			"error": map[string]any{"code": -32603, "message": "云端返回非 JSON"},
 		})
 
-		return
+		return false, "云端返回非 JSON"
 	}
 	if existing, ok := response["id"]; !ok || string(existing) == "null" {
 		response["id"] = json.RawMessage(rawID)
 	}
 
 	writeRaw(writer, response)
+
+	return true, ""
+}
+
+/** MCP 桥调用日志：一行一条 JSON，默认关闭（--log=<file> 开启）。 */
+func appendMcpLog(path, line string, ok bool, errMsg string, durationMs int64) {
+	var msg struct {
+		ID     any    `json:"id"`
+		Method string `json:"method"`
+		Params struct {
+			Name string `json:"name"`
+		} `json:"params"`
+	}
+	_ = json.Unmarshal([]byte(line), &msg)
+	entry := map[string]any{
+		"ts":          time.Now().UTC().Format(time.RFC3339),
+		"id":          msg.ID,
+		"method":      msg.Method,
+		"tool":        msg.Params.Name,
+		"ok":          ok,
+		"duration_ms": durationMs,
+	}
+	if errMsg != "" {
+		entry["error"] = errMsg
+	}
+	appendJSONLine(path, entry)
 }
 
 func forwardMcp(endpoint, token, body string) ([]byte, error) {

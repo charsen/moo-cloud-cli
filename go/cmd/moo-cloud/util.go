@@ -182,6 +182,21 @@ func mcpTools(cloud, token string) ([]string, error) {
 	return names, nil
 }
 
+/** 追加一行 JSON（用于跨天趋势日志；失败不影响主流程）。 */
+func appendJSONLine(path string, v any) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(path), 0o775)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(raw, '\n'))
+}
+
 func contains(list []string, v string) bool {
 	for _, item := range list {
 		if item == v {

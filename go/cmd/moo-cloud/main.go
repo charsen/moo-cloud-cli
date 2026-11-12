@@ -53,9 +53,12 @@ preflight:
   --token=          账号级 MCP token（默认 MOO_CLOUD_MCP_TOKEN 或 ~/.config/moo-fleet/mcp-token）
   --cloud=          cloud 地址（默认 https://c.mooeen.com）
   --limit=<n>       每类最多条数（1-50，默认 5）
+  --concurrency=<n> 项目并发数（1-16，默认 4）
+  --json            输出机器可读的 preflight 结果
+  --metrics-log=<f> 追加一行 JSON 指标（趋势日志）
 
 mcp-server:
-  --token=<token>   --cloud=<url>
+  --token=<token>   --cloud=<url>   --log=<file>
 
 agent-config:
   --target=codex|workbuddy|json|claude
