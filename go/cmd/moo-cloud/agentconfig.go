@@ -34,19 +34,16 @@ func runAgentConfig(args []string) int {
 			if hasValue {
 				opts.target = value
 			}
-		case "write":
-			opts.write = true
-			if hasValue {
-				if parsed, err := strconvParseBool(value); err == nil {
-					opts.write = parsed
-				}
+		case "write", "force":
+			enabled, err := parseBoolFlag(key, value, hasValue)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "参数错误："+err.Error())
+				return 1
 			}
-		case "force":
-			opts.force = true
-			if hasValue {
-				if parsed, err := strconvParseBool(value); err == nil {
-					opts.force = parsed
-				}
+			if key == "write" {
+				opts.write = enabled
+			} else {
+				opts.force = enabled
 			}
 		case "home":
 			if hasValue {
@@ -223,15 +220,4 @@ func tomlString(value string) string {
 	replacer := strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "\n", "\\n", "\r", "\\r", "\t", "\\t")
 
 	return "\"" + replacer.Replace(value) + "\""
-}
-
-func strconvParseBool(value string) (bool, error) {
-	switch strings.ToLower(value) {
-	case "1", "true", "yes", "on":
-		return true, nil
-	case "0", "false", "no", "off":
-		return false, nil
-	default:
-		return false, fmt.Errorf("invalid bool")
-	}
 }

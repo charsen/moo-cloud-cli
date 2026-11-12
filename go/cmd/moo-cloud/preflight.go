@@ -102,7 +102,11 @@ func runPreflight(args []string) int {
 		return 0
 	}
 
-	opts := parsePfOptions(args)
+	opts, err := parsePfOptions(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "参数错误："+err.Error())
+		return 1
+	}
 
 	if !regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`).MatchString(opts.date) {
 		fmt.Fprintln(os.Stderr, "--date 需为 YYYY-MM-DD")
@@ -263,7 +267,7 @@ func runPreflight(args []string) int {
 	return 0
 }
 
-func parsePfOptions(args []string) pfOptions {
+func parsePfOptions(args []string) (pfOptions, error) {
 	cwd, _ := os.Getwd()
 	opts := pfOptions{
 		root:        cwd,
@@ -289,11 +293,9 @@ func parsePfOptions(args []string) pfOptions {
 		}
 		key, value, hasValue := strings.Cut(arg[2:], "=")
 		if key == "offline" || key == "fetch" || key == "json" {
-			enabled := true
-			if hasValue {
-				if parsed, err := strconv.ParseBool(value); err == nil {
-					enabled = parsed
-				}
+			enabled, err := parseBoolFlag(key, value, hasValue)
+			if err != nil {
+				return opts, err
 			}
 			switch key {
 			case "offline":
@@ -320,7 +322,7 @@ func parsePfOptions(args []string) pfOptions {
 		*target = value
 	}
 
-	return opts
+	return opts, nil
 }
 
 func findMarkers(root string) []string {
@@ -407,6 +409,10 @@ func inspectRepo(markerPath string, opts pfOptions) repoReport {
 	}
 
 	applyGitState(appRoot, repoRoot, &report)
+	// marker 所指目录必须先确认属于本仓库；不能让后续 token 校验把错误目录放进队列。
+	if report.HardFailures > 0 {
+		return report
+	}
 
 	for _, dep := range data.Deployments {
 		report.Deployments = append(report.Deployments, inspectDeployment(appRoot, derefStr(report.Remote), dep.Project, dep.EnvFile, opts))
@@ -564,7 +570,7 @@ func applyGitState(appRoot, repoRoot string, report *repoReport) {
 	}
 
 	if _, remote := gitCmd(appRoot, "remote", "get-url", "origin"); remote != "" {
-		report.Remote = strPtr(remote)
+		report.Remote = strPtr(redactRepoURL(remote))
 	}
 }
 
@@ -645,7 +651,9 @@ func inspectDeployment(appRoot, remote, project, envFile string, opts pfOptions)
 
 	slug := summary.Project.Slug
 	entry.Slug = strPtr(slug)
-	entry.CloudRepoURL = summary.Project.RepoURL
+	if summary.Project.RepoURL != nil {
+		entry.CloudRepoURL = strPtr(redactRepoURL(*summary.Project.RepoURL))
+	}
 
 	if slug != project {
 		entry.Errors = append(entry.Errors, fmt.Sprintf("slug 不一致：marker=%s，云端=%s", project, slug))
@@ -1023,7 +1031,18 @@ func renderMarkdown(generatedAt, mode string, repos []repoReport, hardFailures i
 			fmt.Fprintf(&b, "- 软件：`%s` · 平台：%s\n", report.Product, strings.Join(report.Platforms, "/"))
 		}
 		b.WriteString("\n")
-		if report.Role == nil || *report.Role != "app" {
+		if report.Role != nil && *report.Role == "app" {
+			for _, dep := range report.Deployments {
+				okMark := "❌"
+				if dep.OK {
+					okMark = "✅"
+				}
+				fmt.Fprintf(&b, "- 项目：`%s` · 身份校验：%s\n", dep.Project, okMark)
+				for _, note := range append(append([]string{}, dep.Errors...), dep.Warnings...) {
+					fmt.Fprintf(&b, "- ⚠️ %s\n", note)
+				}
+			}
+		} else {
 			b.WriteString("| env | 云端 slug | 结果 | 备注 |\n|---|---|---|---|\n")
 			for _, dep := range report.Deployments {
 				notes := append(append([]string{}, dep.Errors...), dep.Warnings...)
@@ -1108,7 +1127,7 @@ func realpath(path string) string {
 }
 
 func normalizeRemote(remote string) string {
-	r := strings.TrimSpace(remote)
+	r := redactRepoURL(remote)
 	for _, prefix := range []string{"git@", "ssh://", "https://", "http://"} {
 		r = strings.TrimPrefix(r, prefix)
 	}

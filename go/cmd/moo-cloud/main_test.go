@@ -74,7 +74,10 @@ func TestIncludeIssue(t *testing.T) {
 }
 
 func TestParsePfOptions(t *testing.T) {
-	opts := parsePfOptions([]string{"--root=/tmp/x", "--fetch=false", "--offline", "--limit=9", "--root"})
+	opts, err := parsePfOptions([]string{"--root=/tmp/x", "--fetch=false", "--offline", "--limit=9", "--root"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if opts.root != "/tmp/x" {
 		t.Errorf("root=%q", opts.root)
 	}

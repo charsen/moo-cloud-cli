@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,39 @@ import (
 )
 
 var cst = time.FixedZone("CST", 8*3600)
+
+// 裸布尔开关表示启用；显式值必须可识别，不能把拼写错误当成写入/确认授权。
+func parseBoolFlag(name, value string, hasValue bool) (bool, error) {
+	if !hasValue {
+		return true, nil
+	}
+	switch strings.ToLower(value) {
+	case "1", "t", "true", "yes", "on":
+		return true, nil
+	case "0", "f", "false", "no", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("--%s 需要布尔值：true/false、1/0、yes/no 或 on/off", name)
+	}
+}
+
+// 报告只需要仓库位置；URL 用户信息、查询串和片段都不应进入可分享的报告。
+// 无 scheme 的 Git SSH 简写仍保留 git@host:path，避免改坏正常仓库地址。
+func redactRepoURL(remote string) string {
+	remote = strings.TrimSpace(remote)
+	if !strings.Contains(remote, "://") {
+		return remote
+	}
+	u, err := url.Parse(remote)
+	if err != nil {
+		// 解析错误可能包含原 URL；不回显错误或原值，防止非法转义中的凭据泄露。
+		return "[无效仓库地址]"
+	}
+	u.User = nil
+	u.RawQuery, u.Fragment, u.RawFragment = "", "", ""
+	u.ForceQuery = false
+	return u.String()
+}
 
 func envValue(file, key string) (string, bool) {
 	raw, err := os.ReadFile(file)

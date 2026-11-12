@@ -113,9 +113,9 @@ func parseTodoOptions(args []string) (todoOptions, error) {
 		}
 		key, value, hasValue := strings.Cut(arg[2:], "=")
 		if key == "json" || key == "yes" {
-			enabled := true
-			if hasValue && value == "false" {
-				enabled = false
+			enabled, err := parseBoolFlag(key, value, hasValue)
+			if err != nil {
+				return opts, err
 			}
 			if key == "json" {
 				opts.json = enabled
