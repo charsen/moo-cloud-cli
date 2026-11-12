@@ -30,7 +30,7 @@ func TestMcpBridgeNormalizesHttpAndProtocolErrors(t *testing.T) {
 			defer server.Close()
 			var out bytes.Buffer
 			writer := bufio.NewWriter(&out)
-			ok, _ := handleMcpLine(server.URL, "fake", `{"jsonrpc":"2.0","id":7,"method":"tools/list"}`, writer)
+			ok, _ := handleMcpLine(server.URL, "fake", `{"jsonrpc":"2.0","id":7,"method":"tools/list"}`, writer, newCLIUpdater())
 			_ = writer.Flush()
 			var response struct {
 				Version string `json:"jsonrpc"`

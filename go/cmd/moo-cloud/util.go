@@ -153,8 +153,7 @@ func mcpCall(cloud, token, tool string, args map[string]any) (map[string]any, er
 	return data, nil
 }
 
-// 工具定义同时用于兼容性探测：创建待办前必须确认服务器声明了 confirm_token，
-// 不能靠先调一次 create_todo 试探，否则旧服务器会立即写库。
+// 从云端读取工具定义，用于预检按账号实际权限确定可用的队列工具。
 type mcpToolDefinition struct {
 	Name        string `json:"name"`
 	InputSchema struct {

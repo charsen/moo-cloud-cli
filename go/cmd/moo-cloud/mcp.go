@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -53,13 +54,14 @@ func runMcpServer(args []string) int {
 
 	reader := bufio.NewReader(os.Stdin)
 	writer := bufio.NewWriter(os.Stdout)
+	updater := newCLIUpdater()
 	defer writer.Flush()
 
 	for {
 		line, err := reader.ReadString('\n')
 		if len(line) > 0 {
 			started := time.Now()
-			ok, errMsg := handleMcpLine(cloud+"/api/v1/mcp", token, strings.TrimSpace(line), writer)
+			ok, errMsg := handleMcpLine(cloud+"/api/v1/mcp", token, strings.TrimSpace(line), writer, updater)
 			writer.Flush()
 			if logPath != "" {
 				appendMcpLog(logPath, line, ok, errMsg, time.Since(started).Milliseconds())
@@ -77,7 +79,7 @@ func runMcpServer(args []string) int {
 	return 0
 }
 
-func handleMcpLine(endpoint, token, line string, writer *bufio.Writer) (bool, string) {
+func handleMcpLine(endpoint, token, line string, writer *bufio.Writer, updater *cliUpdater) (bool, string) {
 	if line == "" {
 		return true, ""
 	}
@@ -92,6 +94,47 @@ func handleMcpLine(endpoint, token, line string, writer *bufio.Writer) (bool, st
 	rawID, hasID := msg["id"]
 	if hasID && string(rawID) == "null" {
 		hasID = false
+	}
+	var method string
+	_ = json.Unmarshal(msg["method"], &method)
+	var params struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+		Cursor    string          `json:"cursor"`
+	}
+	paramsErr := json.Unmarshal(msg["params"], &params)
+	if method == "tools/call" && (params.Name == "check_cli_update" || params.Name == "update_cli") {
+		// 本机能力不转发 cloud；通知没有响应 id，也不能借通知触发本机写入。
+		if !hasID {
+			return false, "本地工具调用必须带 id"
+		}
+		var rpcVersion string
+		_ = json.Unmarshal(msg["jsonrpc"], &rpcVersion)
+		// 云端原先负责协议验证；本机拦截的写工具也必须验证请求，不能绕过这层边界。
+		validID := len(rawID) > 0 && (rawID[0] == '"' || rawID[0] == '-' || (rawID[0] >= '0' && rawID[0] <= '9'))
+		if rpcVersion != "2.0" || !validID || paramsErr != nil {
+			var id any
+			if validID {
+				id = json.RawMessage(rawID)
+			}
+			writeRaw(writer, map[string]any{"jsonrpc": "2.0", "id": id,
+				"error": map[string]any{"code": -32600, "message": "非法的本地 MCP 工具请求"}})
+			return false, "非法的本地 MCP 工具请求"
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		data, err := updater.callTool(ctx, params.Name, params.Arguments)
+		text, _ := json.Marshal(data)
+		if err != nil {
+			text, _ = json.Marshal(map[string]any{"error": err.Error()})
+		}
+		writeRaw(writer, map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(rawID), "result": map[string]any{
+			"content": []map[string]any{{"type": "text", "text": string(text)}}, "isError": err != nil,
+		}})
+		if err != nil {
+			return false, err.Error()
+		}
+		return true, ""
 	}
 
 	body, err := forwardMcp(endpoint, token, line)
@@ -134,6 +177,37 @@ func handleMcpLine(endpoint, token, line string, writer *bufio.Writer) (bool, st
 	}
 	if existing, ok := response["id"]; !ok || string(existing) == "null" {
 		response["id"] = json.RawMessage(rawID)
+	}
+	if !hasError && (method == "initialize" || method == "tools/list") {
+		var result map[string]json.RawMessage
+		if json.Unmarshal(response["result"], &result) == nil && result != nil {
+			if method == "initialize" {
+				var instructions string
+				_ = json.Unmarshal(result["instructions"], &instructions)
+				// 自动检查有 3 秒总预算，并复用当天缓存，不因检查失败阻塞业务工具。
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				check, err := updater.check(ctx, true)
+				cancel()
+				updateNotice := "本地 CLI 提供 check_cli_update 检查新版；必须先向用户说明目标版本并取得明确同意，才能调用 update_cli。更新后需重新连接 MCP。"
+				if err == nil {
+					updateNotice += " 当前进程 " + check.RunningVersion + "，本机安装 " + check.InstalledVersion + "，最新发布 " + check.LatestVersion + "。" + check.Message
+					if check.UpdateAvailable || check.RestartRequired {
+						updateNotice += " 请在本次会话开始时向用户提醒一次。"
+					}
+				}
+				result["instructions"], _ = json.Marshal(strings.TrimSpace(instructions + "\n" + updateNotice))
+			} else if params.Cursor == "" {
+				var tools []json.RawMessage
+				if json.Unmarshal(result["tools"], &tools) == nil {
+					for _, tool := range updater.toolDefinitions() {
+						raw, _ := json.Marshal(tool)
+						tools = append(tools, raw)
+					}
+					result["tools"], _ = json.Marshal(tools)
+				}
+			}
+			response["result"], _ = json.Marshal(result)
+		}
 	}
 
 	writeRaw(writer, response)

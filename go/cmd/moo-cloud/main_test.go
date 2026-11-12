@@ -212,14 +212,14 @@ func TestHandleMcpLine(t *testing.T) {
 
 	var buf bytes.Buffer
 	writer := bufio.NewWriter(&buf)
-	handleMcpLine(srv.URL+"/api/v1/mcp", "t", `{"jsonrpc":"2.0","id":9,"method":"tools/list","params":{}}`, writer)
+	handleMcpLine(srv.URL+"/api/v1/mcp", "t", `{"jsonrpc":"2.0","id":9,"method":"tools/list","params":{}}`, writer, newCLIUpdater())
 	writer.Flush()
 	if !strings.Contains(buf.String(), `"id":9`) {
 		t.Fatalf("响应未补 id：%s", buf.String())
 	}
 
 	buf.Reset()
-	handleMcpLine(srv.URL+"/api/v1/mcp", "t", `{"jsonrpc":"2.0","method":"notifications/initialized"}`, writer)
+	handleMcpLine(srv.URL+"/api/v1/mcp", "t", `{"jsonrpc":"2.0","method":"notifications/initialized"}`, writer, newCLIUpdater())
 	writer.Flush()
 	if buf.Len() != 0 {
 		t.Fatalf("通知不应写 stdout：%s", buf.String())
