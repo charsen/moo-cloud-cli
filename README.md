@@ -1,276 +1,215 @@
 # moo-cloud-cli
 
-夜间修复流程的**独立**命令行工具，不依赖任何具体项目仓，可直接分享给同事。
+把本地代码仓库和云端的项目问题、待办连起来，并给 Codex / WorkBuddy / DeepSeek Harness 等 AI 客户端提供 MCP 工具。
 
-它做两件事：
+它解决三个具体问题：
 
-1. **身份校验**：扫描工作区里的 `.moo-cloud.json`，确认「本地目录 = 云端项目」，
-   并把「工作区脏 / 在基础分支 / 云端 repo_url 未填」这类风险先标出来；
-2. **拉取队列**：用账号级 MCP token 拉取未处理项（异常与待办是两条独立流程，默认只拉异常），
-   输出一份可以直接喂给 AI 的队列文件。
+1. **对不上号**：确认「这个本地目录」就是「云端那个项目」，防止 AI 改错仓库；
+2. **取数**：把云端待处理的异常、慢 SQL、前端错误、App 错误、待办拉到本地，生成一份队列；
+3. **给 AI 用**：把同一套云端能力包装成本地 MCP，让 AI 客户端直接调用。
 
-> 是否自动改代码由调用方决定；本工具只负责「先验证，再取数」。
+> 它只负责「校验 + 取数 + 提供 MCP」，是否自动改代码由调用方决定。
 
-## 要求
+---
 
-- **不需要 PHP、Node 或任何运行时**：单个可执行文件
-- 本机有 `git`（预检要读仓库状态）
-- 一份能访问 cloud 的账号级 MCP token（`mcp:read` 即可拉取；要回写还需 `mcp:write`）
+## 5 分钟上手
 
-## 安装
+如果你只想先跑起来：
 
-从 `dist/` 取对应平台的文件，改名为 `moo-cloud` 并加执行权限：
+1. 从 [GitHub Releases](https://github.com/charsen/moo-cloud-cli/releases/latest) 或 [Gitee Releases](https://gitee.com/charsen/moo-cloud-cli/releases) 下载对应平台的文件；
+2. 改名为 `moo-cloud`（Windows 为 `moo-cloud.exe`），加执行权限；
+3. 把账号 token 存到 `~/.config/moo-fleet/mcp-token`；
+4. 在代码工作区执行 `moo-cloud preflight --offline`。
 
-| 平台 | 文件 |
+下面按步骤展开。
+
+---
+
+## 1. 它适合谁
+
+- 你有一批**本地代码仓库**，云端有一批对应的**项目**，想把两边关联起来；
+- 你希望 AI 能读取云端的问题/待办，但不想让它瞎猜「哪个仓库对应哪个项目」；
+- 你希望夜间或手动触发时，只处理「归你负责的类别」，不误关别人的问题。
+
+不适合：只想看云端页面、不打算在本地跑命令的人。
+
+---
+
+## 2. 准备什么
+
+| 需要 | 说明 |
 |---|---|
-| macOS Apple Silicon | `moo-cloud-darwin-arm64` |
+| 一台能运行命令的电脑 | macOS / Linux / Windows 都可以 |
+| `git` | 预检要读仓库状态；`git --version` 能输出版本即可 |
+| 一个 Moo Cloud 账号 | 默认地址 `https://c.mooeen.com`，自建实例可用 `--cloud` 指定 |
+| 一个**账号级 token** | 登录 cloud → 「个人 Token」→「生成 Token」 |
+
+token 有两种权限：
+
+- `mcp:read`：只读，够拉取问题/待办；
+- `mcp:write`：可回写（解决/认领）；会自动包含读。
+
+第一次用建议先生成只读 token。
+
+---
+
+## 3. 安装
+
+### 3.1 下载
+
+| 平台 | 下载文件 |
+|---|---|
+| macOS Apple Silicon（M1/M2/M3…） | `moo-cloud-darwin-arm64` |
 | macOS Intel | `moo-cloud-darwin-amd64` |
 | Linux x86_64 | `moo-cloud-linux-amd64` |
 | Linux arm64 | `moo-cloud-linux-arm64` |
 | Windows x86_64 | `moo-cloud-windows-amd64.exe` |
 | Windows arm64 | `moo-cloud-windows-arm64.exe` |
 
+Release 页同时提供 `SHA256SUMS`，可以校验下载是否完整。
+
+### 3.2 放到一个固定位置
+
+建议放在用户目录下的固定位置，不要放在某个 git 仓库里（仓库重置/切分支可能把文件删掉）：
+
 macOS / Linux：
 
 ```bash
-cp dist/moo-cloud-darwin-arm64 ./moo-cloud
-chmod +x ./moo-cloud
-xattr -d com.apple.quarantine ./moo-cloud   # 仅 macOS 首次运行需要
+mkdir -p ~/.local/bin
+cp /path/to/downloaded/moo-cloud-darwin-arm64 ~/.local/bin/moo-cloud
+chmod +x ~/.local/bin/moo-cloud
+
+# 让当前 shell 找得到（写进 ~/.zshrc 或 ~/.bashrc 可持久）
+export PATH="$HOME/.local/bin:$PATH"
+
+# macOS 首次运行如果提示“无法打开/已损坏”
+xattr -d com.apple.quarantine ~/.local/bin/moo-cloud
 ```
 
 Windows（PowerShell）：
 
 ```powershell
-Copy-Item .\dist\moo-cloud-windows-amd64.exe .\moo-cloud.exe
-# 不需要 chmod；首次运行如被 SmartScreen 拦截，选择“仍要运行”
+New-Item -ItemType Directory -Force "$env:USERPROFILE\bin" | Out-Null
+Copy-Item "$env:USERPROFILE\Downloads\moo-cloud-windows-amd64.exe" "$env:USERPROFILE\bin\moo-cloud.exe"
+
+# 把 %USERPROFILE%\bin 加进 PATH（当前用户，一次即可）
+[Environment]::SetEnvironmentVariable(
+  "Path",
+  [Environment]::GetEnvironmentVariable("Path", "User") + ";$env:USERPROFILE\bin",
+  "User"
+)
 ```
 
-从源码构建：`cd go && make dist`（需要 Go 1.22+）；测试：`cd go && go test ./...`。
-`moo-cloud --version` 查看构建版本（由 git describe 注入）。
+新开一个终端，确认：
 
-### 平台差异
+```bash
+moo-cloud --version
+```
 
-| 项 | macOS / Linux | Windows |
-|---|---|---|
-| 可执行文件 | `moo-cloud` | `moo-cloud.exe` |
-| 执行权限 | `chmod +x` | 不需要 |
-| 首次运行 | macOS 可能需要 `xattr -d com.apple.quarantine` | SmartScreen 确认 |
-| token 文件 | `~/.config/moo-fleet/mcp-token` | `%USERPROFILE%\.config\moo-fleet\mcp-token` |
-| 路径写法 | `/path/to/moo-cloud` | `C:/path/to/moo-cloud.exe`（生成配置时自动转义） |
+Windows 用 `moo-cloud.exe --version`（如果已在 PATH 里，`moo-cloud --version` 也可以）。
+后文所有 `moo-cloud ...` 命令，在 Windows 上对应 `moo-cloud.exe ...`。
 
-`agent-config` 会把**当前二进制自身的绝对路径**写进客户端配置，所以在哪个平台运行就写哪个平台的路径，不需要手工改分隔符。
+### 3.3 从源码构建（开发者）
 
-## 快速开始
+```bash
+git clone https://github.com/charsen/moo-cloud-cli.git
+cd moo-cloud-cli/go
+make dist          # 输出到 ../dist/
+go test ./...      # 跑测试
+```
+
+需要 Go 1.22+。
+
+---
+
+## 4. 配置 token
+
+token 只需要存一次，文件内容**只有 token 本身**。
 
 macOS / Linux：
 
 ```bash
-# 1. 存 token（只读一次，权限 600）
 mkdir -p ~/.config/moo-fleet
 printf '%s' '<moo_mcp_...>' > ~/.config/moo-fleet/mcp-token
 chmod 600 ~/.config/moo-fleet/mcp-token
-
-# 2. 在工作区根目录执行
-cd /path/to/workspace
-./moo-cloud preflight --offline     # 先只做本地校验
-./moo-cloud preflight --fetch       # 校验 + 拉异常队列（默认类型）
-./moo-cloud preflight --fetch --types=todo \
-  --out=moo-cloud-reports/$(date +%F)/todos        # 待办单独一条流
 ```
 
 Windows（PowerShell）：
 
 ```powershell
-# 1. 存 token
 New-Item -ItemType Directory -Force "$env:USERPROFILE\.config\moo-fleet" | Out-Null
-Set-Content -NoNewline -Encoding ascii -Path "$env:USERPROFILE\.config\moo-fleet\mcp-token" -Value '<moo_mcp_...>'
-
-# 2. 在工作区根目录执行
-cd C:\path\to\workspace
-.\moo-cloud.exe preflight --offline
-.\moo-cloud.exe preflight --fetch
-.\moo-cloud.exe preflight --fetch --types=todo --out=moo-cloud-reports\todos
+Set-Content -NoNewline -Encoding ascii `
+  -Path "$env:USERPROFILE\.config\moo-fleet\mcp-token" `
+  -Value '<moo_mcp_...>'
 ```
 
-输出默认在 `<工作区>/moo-cloud-reports/<日期>/`：
+也可以不用文件，改用环境变量 `MOO_CLOUD_MCP_TOKEN`。
 
-| 文件 | 内容 |
+> token 不要提交进任何仓库，也不要贴到聊天/日志里。
+
+---
+
+## 5. 第一次运行
+
+先进入你的代码工作区（也就是放着若干仓库的目录），然后：
+
+```bash
+cd /path/to/workspace
+
+# 1) 只做本地与身份校验，不拉取
+moo-cloud preflight --offline
+
+# 2) 校验 + 拉取异常队列
+moo-cloud preflight --fetch
+
+# 3) 待办单独拉（默认类型不含 todo）
+moo-cloud preflight --fetch --types=todo --out=moo-cloud-reports/todos
+```
+
+成功后会在 `<工作区>/moo-cloud-reports/<日期>/` 生成：
+
+| 文件 | 用途 |
 |---|---|
 | `_preflight.json` | 机器可读的校验结果 |
-| `_preflight.md` | 人读摘要（按仓库） |
-| `_queue.json` | 待处理问题（仅 `--fetch`） |
+| `_preflight.md` | 人读摘要：每个仓库、分支、脏文件、身份是否匹配 |
+| `_queue.json` | 待处理问题/待办（仅 `--fetch`） |
+| `_metrics.json` | 本次运行的耗时与条数（仅 `--fetch`） |
 
-报告正文模板见 `templates/report.md`。
+下一步：打开 `_preflight.md` 看每个仓库是否对上；再按第 8 节把 MCP 接进 AI 客户端。
 
-## 命令一览
+### 如果报「未找到任何 .moo-cloud.json」
+
+说明你的仓库还没登记云端身份。每个要纳管的仓库根目录需要放一个 `.moo-cloud.json`，见第 7 节。
+
+### 如果报「app root 不存在或缺 artisan」
+
+后端仓库的 marker 里 `root` 写的是 Laravel 应用所在子目录（常见是 `engine`）。如果没有子目录，写 `.`。
+
+---
+
+## 6. 命令一览
 
 | 命令 | 作用 |
 |---|---|
-| `moo-cloud preflight` | 身份校验 + 拉取异常/待办队列（主命令） |
-| `moo-cloud mcp-server` | 本地 stdio MCP 桥：把云端 MCP 暴露给 Codex / WorkBuddy / Claude 等 |
-| `moo-cloud agent-config` | 生成或写入各客户端的 MCP 配置 |
+| `moo-cloud preflight` | 身份校验 + 拉取问题/待办（主命令） |
+| `moo-cloud mcp-server` | 本地 stdio MCP 桥，给 AI 客户端用 |
+| `moo-cloud agent-config` | 生成/写入客户端的 MCP 配置 |
+| `moo-cloud --version` | 查看版本 |
+| `moo-cloud --help` | 查看子命令 |
 
-报告模板：异常用 `templates/report.md`，待办用 `templates/todo-report.md`。
+每个子命令也支持 `--help`，例如 `moo-cloud preflight --help`。
 
-## 在 Codex / WorkBuddy / Claude 里使用
+---
 
-CLI 自带一个本地 **stdio 桥** `moo-cloud mcp-server`：客户端只需要 `command + args`，
-token 和云端地址由桥从本机读取（`~/.config/moo-fleet/mcp-token`），不用逐客户端配 URL / Bearer。
+## 7. 核心概念
 
-### 生成配置
+### 7.1 云端项目 vs 本地仓库
 
-| 客户端 | 命令 | 写入位置 |
-|---|---|---|
-| Codex | `./moo-cloud agent-config --target=codex --write` | `~/.codex/config.toml` |
-| WorkBuddy | `./moo-cloud agent-config --target=workbuddy --write` | `~/.workbuddy/mcp.json` |
-| Claude / Cursor / 通用 | `./moo-cloud agent-config --target=json` | 手动粘贴到各自配置 |
+云端一个「项目」通常对应本地一个仓库；一个仓库也可能服务多个项目（多环境/多客户）。
 
-已有同名配置时默认不覆盖，更新时加 `--force`；`--home=<dir>` 可演练到临时目录。
-Windows 上命令换成 `.\moo-cloud.exe agent-config ...`，生成的 `command` 会带 `.exe` 与正确转义。
-写入的 `command` 是 **moo-cloud 自身的绝对路径**，所以移动二进制后要重新跑一次 `agent-config`。
+`.moo-cloud.json` 就是这张对照表，放在**仓库根目录**。
 
-生成的 Codex 片段（只读工具带自动批准）：
-
-```toml
-[mcp_servers.moo_cloud]
-command = "/path/to/moo-cloud"
-args = ["mcp-server"]
-
-[mcp_servers.moo_cloud.tools.list_projects]
-approval_mode = "approve"
-```
-
-WorkBuddy / Claude / Cursor 等通用 JSON：
-
-```json
-{
-  "mcpServers": {
-    "moo-cloud": {
-      "type": "stdio",
-      "command": "/path/to/moo-cloud",
-      "args": ["mcp-server"]
-    }
-  }
-}
-```
-
-### Codex：重启即生效
-
-1. 写入配置：`./moo-cloud agent-config --target=codex --write`
-2. 完全退出 Codex 再打开（新开会话）
-3. 验证：
-
-   ```bash
-   codex mcp list | grep moo_cloud
-   codex exec --skip-git-repo-check "调用 moo_cloud 的 list_projects 工具，只回答项目数量"
-   ```
-
-4. 审批：8 个只读工具自动批准；`resolve_issue` / `update_todo_status` 会请求人工批准。
-   无人值守场景（如 CI）才用 `--dangerously-bypass-approvals-and-sandbox`，平时不要。
-
-### WorkBuddy：写配置 → 完全退出 → 面板启用 → 新会话
-
-> **关键**：WorkBuddy 不会在启动时自动加载 `mcp.json` 里新加的 server。
-> 写完配置必须再在它的 MCP 面板里启用一次，并新建会话，否则会话里看不到工具。
-
-1. 写入配置（已有条目时加 `--force` 覆盖）：
-
-   ```bash
-   ./moo-cloud agent-config --target=workbuddy --write --force
-   ```
-
-2. **完全退出 WorkBuddy**：用 `Cmd+Q`，不是只关窗口；确认进程真的退出：
-
-   ```bash
-   pgrep -f "/Applications/WorkBuddy.app/Contents/MacOS/Electron" || echo "已退出"
-   ```
-
-3. 重新打开 WorkBuddy。
-4. 打开 **设置 → MCP**（部分版本叫「工具」或「连接器」），找到 `moo-cloud`，
-   打开启用开关。第一次启用可能要求确认/批准该 MCP 配置，选择允许。
-5. **新建一个会话**（旧会话不会自动获得新工具），让它「列出 MCP 工具」或
-   「列出 Moo Cloud 的项目」。
-
-验证 daemon 是否拉起了桥：
-
-```bash
-grep "custom-mcp:moo-cloud" ~/.workbuddy/logs/daemon.log | tail -3
-```
-
-正常会看到：
-
-```
-wb:mcp:setEnabled arg="custom-mcp:moo-cloud"
-wb:mcp:connect arg="custom-mcp:moo-cloud"
-MCP-AuthDiag stdio-connected {"id":"custom-mcp:moo-cloud","pidSpawned":...}
-```
-
-工具列表应恰好是 10 个：`list_projects`、`list_issues`、`get_issue`、`get_issue_markdown`、
-`list_apps`、`list_todos`、`get_todo`、`get_todo_image`、`resolve_issue`、`update_todo_status`。
-
-WorkBuddy 常见问题：
-
-| 现象 | 处理 |
-|---|---|
-| MCP 面板里没有 `moo-cloud` | 确认 `~/.workbuddy/mcp.json` 有该条目；字段只能是 `type` / `command` / `args` / `env` / `cwd` / `url` / `headers` / `timeout`，带 `description` 会被整条拒绝；然后完全退出重开，或用 `--force` 重写 |
-| 启用了但会话里没有工具 | 新建会话；旧会话不会热加载 |
-| 日志有 `stdio-connected` 但工具为空 | 手工验证桥（见下），多半是 token 缺失 |
-| 改了配置没变化 | 只关窗口不算重启，必须 `Cmd+Q` 完全退出 |
-
-### DeepSeek Harness（DSH）
-
-DSH 通过内置的 `@deepseek-ai/dsh-mcp-client` 插件加载 MCP，**不使用** `mcp.json`。
-在 `~/.dsh/profiles/desktop/cordis.patch.yml` 末尾追加一条：
-
-```yaml
-- insert:
-    - id: mcp-moo-cloud
-      name: '@deepseek-ai/dsh-mcp-client'
-      config:
-        serverName: moo-cloud
-        transport: stdio
-        command: /path/to/moo-cloud
-        args: ['mcp-server']
-        toolCallTimeoutMs: 120000
-```
-
-注意必须是 `- insert:` 列表：直接写 `- id:` 只会覆盖已存在的条目，
-**新增插件不会生效**。
-
-把 `command` 换成二进制绝对路径（例如 `.../dist/moo-cloud-darwin-arm64`）。
-保存后插件会原地重载；工具会以 `mcp__moo-cloud__list_projects`
-这种带命名空间的形式出现。
-
-注意：
-
-- DSH 会清掉 stdio 子进程里匹配 `KEY|PASSWORD|SECRET|TOKEN` 的环境变量；
-  桥默认从 `~/.config/moo-fleet/mcp-token` 读 token，不受影响
-- 如果一定要用环境变量传 token，显式写进 `config.env`，不要依赖继承
-- 第一次调用可能触发 DSH 的工具权限确认
-
-### 手工验证桥
-
-```bash
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | ./moo-cloud mcp-server
-```
-
-正常返回一行 JSON；报“缺少 token”时检查 `~/.config/moo-fleet/mcp-token`。
-
-### Claude / Cursor
-
-把上面的通用 JSON 粘到对应客户端的 MCP 配置（Claude Desktop 是
-`claude_desktop_config.json`），重启客户端即可。
-
-桥的行为：stdin 每行一条 JSON-RPC，原样转发到云端 `/api/v1/mcp`；有 `id` 的写回一行，
-通知不写 stdout；网络失败返回同 `id` 的 JSON-RPC error。云端若返回 SSE（`text/event-stream`），
-桥会取最后一条 `data` 消息。写入配置前会备份原文件，
-重复执行不会重复添加。
-
-## 仓库标记：`.moo-cloud.json`
-
-在每个待纳管的仓库**根目录**放一份。两种角色：
-
-### 后端（默认）
+### 7.2 后端仓库 marker
 
 ```json
 {
@@ -283,12 +222,13 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | ./m
 }
 ```
 
-- `root`：Laravel 应用根相对仓库根的位置（如 `engine`，没有子目录就写 `.`）
-- `deployments`：一个仓库可能服务多个云端项目（多环境/多客户），每项指定读取哪个 `.env*`
-- 校验方式：用该 env 里的 `MOO_MONITOR_CLOUD_TOKEN` 调 cloud `/api/v1/summary`，
-  返回的 `project.slug` 必须与 `project` 一致
+- `root`：Laravel 应用相对仓库根的目录；没有子目录写 `.`
+- `deployments[].project`：云端项目 slug
+- `deployments[].env_file`：从哪个 env 文件读 host token
 
-### 软件（App / 桌面 / Web）
+校验方式：用该 env 里的 `MOO_MONITOR_CLOUD_TOKEN` 调云端 `/api/v1/summary`，返回的项目 slug 必须与 marker 一致。
+
+### 7.3 软件仓库 marker（App / 桌面 / Web）
 
 ```json
 {
@@ -297,137 +237,224 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | ./m
   "product": "my-app",
   "project": "my-project",
   "platforms": ["android", "ios"],
-  "identifiers": ["com.example.app"],
   "verify": [
     { "file": "android/app/build.gradle", "contains": "com.example.app" }
   ]
 }
 ```
 
-- `verify`：文件存在且包含指定字符串才算对上，用于防止认错仓
-- `identifiers` / `platforms` 会与云端 `AppProduct` 的标识交叉核对
+`verify` 是包名指纹：文件存在且包含指定字符串才算对上，防止认错仓库。
 
-## 队列结构
+### 7.4 token、范围、策略
 
-`_queue.json` 按项目分组，每类单独一份：
+- **token**：账号级，一枚覆盖你所有项目；`moo_mcp_` 开头
+- **MCP 处理范围**：你在 cloud 里设置「哪些类别归我处理」；范围外的类别不会被自动拉取/回写
+- **MCP 处理策略**：问题类可分 `auto`（自动解决）/ `confirm`（需人工确认）/ `hold`（保留不处理）；默认 `auto`
+- **待办策略**：每条待办另有 `ai_policy`，同样是 `auto/confirm/hold`
 
-```json
-{
-  "generated_at": "2026-11-11T18:00:00+08:00",
-  "projects": {
-    "my-project": {
-      "runtime":  { "issues": [], "count": 0, "has_more": false },
-      "todo":     { "issues": [], "count": 0, "pages": 1 }
-    }
-  }
-}
+范围与策略都在 cloud 页面设置，CLI 只读取并执行。
+
+---
+
+## 8. 接入 AI 客户端
+
+`moo-cloud mcp-server` 是一个本地 stdio MCP 桥：客户端只需要 `command + args`，token 和云端地址由桥自己读取。
+
+先生成配置（在目标电脑上执行，它会写入**当前二进制自身的绝对路径**）：
+
+```bash
+moo-cloud agent-config --target=codex --write
+moo-cloud agent-config --target=workbuddy --write
+moo-cloud agent-config --target=json        # 只打印，给 Claude/Cursor 等
 ```
 
-- 单类拉取失败：该段是 `{"issues": [], "count": 0, "error": "..."}`，其他类不受影响；
-- 服务端还没提供某个工具：该段带 `"skipped": "服务端未提供 list_todos"`；
-- 待办行额外带 `ai_policy`：`auto` 可自动完成、`confirm` 只能认领/分析、`hold` 保留不动。
+### 8.1 Codex
 
-## MCP 处理范围（账号默认 + 我在项目里的范围）
+1. 执行 `moo-cloud agent-config --target=codex --write`；
+2. 完全退出 Codex 再打开；
+3. 验证：
 
-不是所有类别都归你处理时，在 cloud 里配置范围，而不是每次改命令行：
+```bash
+codex mcp list | grep moo_cloud
+codex exec --skip-git-repo-check "调用 moo_cloud 的 list_projects 工具，只回答项目数量"
+```
 
-- **账号默认**：「个人 Token」页 →「MCP 默认范围」（留空 = 全部）
-- **我在项目里的范围**：项目卡片上的「MCP 范围」，只影响你自己，
-  同项目的其他维护者不受影响；留空继承账号默认
-- 有效范围 = 我在该项目的范围 ?? 账号默认 ?? 全部，由 MCP `list_projects` 返回
-- 范围外的类别在队列里标 `"skipped": "不在处理范围"`，不拉取、不修复、不回写
-- 服务端对 `resolve_issue` / `update_todo_status` 也做了范围校验：范围外返回 403
-- 只影响 MCP（夜间自动或随时手动发起）；页面手动处理不受限制
-- 拉取按项目并发（最多 4 个）；429 / 5xx 自动重试两次
+生成的配置会对 8 个只读工具自动批准；`resolve_issue` / `update_todo_status` 仍会请求人工批准。
 
-## MCP 处理策略（问题类）
+### 8.2 WorkBuddy
 
-个人级设置，默认全部「自动解决」；在「个人 Token」页 →「MCP 策略」里按类别选：
+> WorkBuddy 不会自动加载新 server，写完配置还要在它的面板里启用一次。
 
-| 策略 | 行为 |
+1. `moo-cloud agent-config --target=workbuddy --write --force`
+2. 用 `Cmd+Q` 完全退出 WorkBuddy（不是关窗口），确认进程退出：
+
+   ```bash
+   pgrep -f "/Applications/WorkBuddy.app/Contents/MacOS/Electron" || echo "已退出"
+   ```
+
+3. 重新打开 WorkBuddy；
+4. 设置 → MCP（部分版本叫「工具/连接器」），启用 `moo-cloud`；
+5. 新建一个会话。
+
+验证：
+
+```bash
+grep "custom-mcp:moo-cloud" ~/.workbuddy/logs/daemon.log | tail -3
+```
+
+应看到 `wb:mcp:setEnabled` / `wb:mcp:connect` / `stdio-connected`。
+
+### 8.3 DeepSeek Harness（DSH）
+
+DSH 通过 `@deepseek-ai/dsh-mcp-client` 插件加载，不使用 `mcp.json`。在
+`~/.dsh/profiles/desktop/cordis.patch.yml` 末尾追加：
+
+```yaml
+- insert:
+    - id: mcp-moo-cloud
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: moo-cloud
+        transport: stdio
+        command: "/path/to/moo-cloud"
+        args: ["mcp-server"]
+        toolCallTimeoutMs: 120000
+```
+
+注意：**新增插件必须放在 `- insert:` 里**；直接写 `- id:` 只会覆盖已有条目，不会加载新插件。
+
+保存后 DSH 会重载；工具会以 `mcp__moo-cloud__list_projects` 形式出现。
+
+DSH 会清掉子进程里匹配 `KEY|PASSWORD|SECRET|TOKEN` 的环境变量；桥默认读 token 文件，不受影响。
+
+### 8.4 Claude / Cursor
+
+把 `moo-cloud agent-config --target=json` 的输出粘到对应客户端的 MCP 配置
+（Claude Desktop 是 `claude_desktop_config.json`），重启客户端。
+
+### 8.5 手工验证桥
+
+```bash
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | moo-cloud mcp-server
+```
+
+正常返回一行 JSON；报「缺少 token」时检查第 4 节。
+
+---
+
+## 9. MCP 工具
+
+| 工具 | 用途 |
 |---|---|
-| `auto`（默认） | 修复并验证通过后，允许 MCP 自动 resolve |
-| `confirm` | 可以分析、修复、提交分支，但 resolve 会返回 403，留人工确认 |
-| `hold` | 完全不处理：队列标 `skipped: 策略：保留不处理` |
+| `list_projects` | 项目清单、待处理计数、有效处理范围、策略 |
+| `list_issues` | 按项目/类型列问题 |
+| `get_issue` | 单条问题完整上下文（可选 payload） |
+| `get_issue_markdown` | 单条问题的 AI markdown |
+| `list_apps` | 项目下的软件（AppProduct） |
+| `list_todos` | 待办列表 |
+| `get_todo` | 待办详情（含附件） |
+| `get_todo_image` | 读取待办图片 |
+| `resolve_issue` | 标记问题已解决（需 `mcp:write`） |
+| `update_todo_status` | 认领/完成待办（需 `mcp:write`） |
 
-- 只影响问题类（runtime / slow_query / frontend_error / app_error）
-- 待办仍是逐条的 `ai_policy`（auto/confirm/hold）
-- 队列里 `confirm` 类型的结果会带 `"policy": "confirm"`，调度方据此不自动 resolve
+写操作会校验「处理范围 + 策略」：范围外或 `confirm/hold` 会返回 403。
 
-## 可观测性
+---
 
-每次 `--fetch` 都会在输出目录写 `_metrics.json`：
+## 10. 输出与可观测性
 
-```json
-{
-  "generated_at": "...",
-  "mode": "online",
-  "metrics": {
-    "duration_ms": 8123,
-    "projects": {
-      "my-project": {
-        "duration_ms": 1204,
-        "types": { "runtime": { "count": 3, "duration_ms": 210 }, "todo": { "count": 0, "skipped": "不在处理范围" } }
-      }
-    }
-  }
-}
-```
+- `_metrics.json`：本次运行总耗时、每项目/类型的耗时与条数、跳过/错误
+- `--metrics-log=<file>`：每次运行追加一行 JSON，用于趋势
+- `mcp-server --log=<file>`：每次 MCP 调用一行（method/tool/ok/duration/error）
 
-- `--metrics-log=<file>`：每跑一次追加一行 JSON，用于看趋势/失败率
-- MCP 桥加 `--log=<file>`：每次调用一行（method / tool / ok / duration_ms / error），默认关闭
-- 失败/跳过原因同时进 `_preflight.md` 与 `_queue.json`，不依赖日志猜
+---
 
-## 常用参数
+## 11. 常用参数
 
 | 参数 | 说明 |
 |---|---|
 | `--root=<dir>` | 工作区根目录，默认当前目录 |
 | `--date=YYYY-MM-DD` | 输出日期目录，默认上海当天 |
-| `--out=<dir>` | 输出目录，默认 `<root>/moo-cloud-reports/<date>` |
+| `--out=<dir>` | 输出目录 |
 | `--offline` | 跳过云端身份校验 |
-| `--fetch` | 拉取待处理队列 |
-| `--types=` | 逗号分隔，默认 `runtime,slow_query,frontend_error,app_error`；待办单独跑 `--types=todo` |
-| `--token=` | 账号级 MCP token；默认读 `MOO_CLOUD_MCP_TOKEN` 或 `~/.config/moo-fleet/mcp-token` |
-| `--cloud=` | cloud 地址，默认 `https://c.mooeen.com`（也接受 `MOO_CLOUD_URL`） |
-| `--limit=` | 每项目每类最多拉取条数（1–50，默认 5）；frontend/app 会翻页补足后再截断 |
-| `--concurrency=` | 项目间并发数（1–16，默认 4） |
+| `--fetch` | 拉取队列 |
+| `--types=` | 默认 `runtime,slow_query,frontend_error,app_error`；待办用 `todo` |
+| `--token=` | 覆盖 token（默认文件或环境变量） |
+| `--cloud=` | cloud 地址，默认 `https://c.mooeen.com` |
+| `--limit=` | 每类最多条数（1–50，默认 5） |
+| `--concurrency=` | 项目并发数（1–16，默认 4） |
 | `--json` | 输出机器可读的 preflight 结果 |
+| `--metrics-log=<file>` | 追加指标日志 |
 
-取值参数必须带 `=`（裸写 `--root` 会被忽略并告警）；`--types=` 为空或全是未知类型会直接失败，
-不会静默产出一份空队列。
+退出码：`0` 正常（含单仓跳过）；`1` 无法继续（缺 token、没有通过校验的仓库、整体拉取失败）。
 
-## 退出码
+---
 
-- `0`：正常，或只有单仓/单类告警——失败仓记录在 `_preflight.json`，其余仓照常拉取
-- `1`：无法继续（缺账号 token、没有通过身份校验的仓库、整体拉取失败、`--date` 非法等）
+## 12. 常见问题
 
-单仓身份不一致不会再让整晚中止：该仓被排除出拉取清单，报告里标红，其余健康仓继续。
+**Q：`moo-cloud: command not found`**
+没放进 PATH。用绝对路径执行，或把所在目录加入 PATH。
 
-## 故障排查
+**Q：`未找到任何 .moo-cloud.json`**
+工作区里没有 marker。确认 `--root` 指向的目录下有仓库，并按第 7 节加 marker。
 
-| 现象 | 处理 |
-|---|---|
-| `mcp-server: 缺少 token` | 确认 `~/.config/moo-fleet/mcp-token` 存在且权限 600；或显式传 `--token=` |
-| 客户端里看不到 Moo Cloud 工具 | 重启客户端；确认 `command`/`args` 路径可执行；先用手工 `printf` 验证桥 |
-| 生成的 `command` 路径不对 | 移动过二进制：重新跑一次 `moo-cloud agent-config --write --force` |
-| macOS 提示“无法打开/已损坏” | `xattr -d com.apple.quarantine ./moo-cloud` |
-| `云端不可达` / 401 | 检查网络与 token 是否被吊销；`--cloud` 是否指向正确实例 |
-| 重复执行 `--write` 没变化 | 已有同名配置时默认跳过，需要覆盖加 `--force` |
-| 报告目录日期不对 | 日期按 Asia/Shanghai；可用 `--date=YYYY-MM-DD` 指定 |
-| 报“部署指向多个云端” | 各部署的 `MOO_MONITOR_CLOUD_URL` 不一致，用 `--cloud=` 显式指定拉取目标 |
+**Q：`app root 不存在或缺 artisan`**
+marker 的 `root` 写错了；Laravel 在子目录时写子目录名，否则写 `.`。
 
-## 安全
+**Q：`env 缺 MOO_MONITOR_CLOUD_TOKEN`**
+该仓库的 `.env*` 里没有云端 host token；找项目管理员要，或检查 `env_file` 是否写对。
 
-- host token 只从本地 `.env*` 读取，不打印、不写日志；
-- 个人 MCP token 只读文件/环境变量；
-- 不要把 token 提交进任何仓库；cloud 侧只存哈希。
+**Q：`slug 不一致`**
+本地 marker 的 `project` 和云端 token 对应的项目对不上，说明目录/仓库认错了，先别继续。
 
-## 为什么先校验再修
+**Q：拉取失败 / 401**
+token 失效、被吊销或过期；重新生成。`--cloud` 指向的实例也要对。
 
-夜间自动改代码最大的风险不是「修不动」，而是**改错仓库**或**基于旧代码修**。
-这个工具的目的就是把这两类风险在动手前挡掉：身份对不上直接硬失败，工作区脏/分支不对只告警，
-由调用方决定今晚跳过哪个仓。
+**Q：WorkBuddy 里看不到工具**
+只写配置不够：要 `Cmd+Q` 完全退出 → 重开 → MCP 面板启用 → 新建会话。
+
+**Q：DSH 里 `server is disconnected`**
+确认配置在 `- insert:` 下、`command` 指向真实存在的二进制；改完重启 DSH 或新建会话。
+
+**Q：macOS 提示无法打开**
+`xattr -d com.apple.quarantine /path/to/moo-cloud`。
+
+**Q：Windows 上 token 读不到**
+路径是 `%USERPROFILE%\.config\moo-fleet\mcp-token`，写入时用 ASCII 编码，避免 UTF-16。
+
+**Q：移动了二进制后客户端断连**
+`agent-config` 写的是绝对路径；移动后重新执行一次 `agent-config --write --force`。
+
+---
+
+## 13. 安全
+
+- host token 只从本地 `.env*` 读取，不打印、不写日志
+- 个人 MCP token 只读文件/环境变量；cloud 侧只存哈希
+- 不要把 token 提交进仓库、贴到聊天或日志
+- 写操作在服务端校验范围与策略，范围外返回 403
+
+---
+
+## 14. 开发
+
+```bash
+cd go
+make dist      # 交叉编译 6 个平台
+go test ./...  # 单元 + httptest 集成测试
+gofmt -w cmd/moo-cloud/*.go
+```
+
+目录：
+
+```
+go/cmd/moo-cloud/   main.go / preflight.go / mcp.go / agentconfig.go
+templates/          报告模板
+```
+
+欢迎提 issue / PR。
+
+---
 
 ## License
 
