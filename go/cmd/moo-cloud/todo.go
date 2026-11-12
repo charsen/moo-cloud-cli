@@ -25,6 +25,7 @@ type todoOptions struct {
 	cloud       string
 	json        bool
 	yes         bool
+	images      []string
 }
 
 func runTodo(args []string) int {
@@ -73,6 +74,9 @@ func runTodo(args []string) int {
 	if title != "" {
 		fmt.Println(title)
 	}
+	if len(opts.images) > 0 {
+		fmt.Printf("图片已保存：%v 张（新增 %v 张）\n", result["images_attached"], result["images_added"])
+	}
 
 	return 0
 }
@@ -81,6 +85,7 @@ func printTodoHelp() {
 	fmt.Print(`用法：moo-cloud todo add --project=<slug> --title="..." [选项]
 
 选项:
+  --image=<path>     附加图片，可重复指定，最多 5 张，每张不超过 8 MiB
   --description=...   详细描述（--from-issue 时默认取问题 markdown）
   --category=bug|task 默认 bug
   --priority=low|normal|high 默认 normal
@@ -127,6 +132,8 @@ func parseTodoOptions(args []string) (todoOptions, error) {
 			opts.project = value
 		case "title":
 			opts.title = value
+		case "image":
+			opts.images = append(opts.images, value)
 		case "description":
 			opts.description = value
 		case "category":
@@ -257,6 +264,14 @@ func addTodo(opts todoOptions) (map[string]any, error) {
 		args["source"] = source
 	}
 
+	images, err := loadTodoImages(opts.images, false)
+	if err != nil {
+		return nil, err
+	}
+	if len(images) > 0 {
+		args["images"] = images
+	}
+
 	preview, err := mcpCall(cloud, token, "create_todo", args)
 	if err != nil {
 		return nil, err
@@ -295,7 +310,14 @@ func addTodo(opts todoOptions) (map[string]any, error) {
 
 	args["confirm_token"] = tokenValue
 
-	return mcpCall(cloud, token, "create_todo", args)
+	result, err := mcpCall(cloud, token, "create_todo", args)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyTodoImages(result, len(images)); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func splitIssueRef(ref string) (string, string, error) {

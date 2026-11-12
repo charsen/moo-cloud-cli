@@ -118,7 +118,7 @@ make dist          # 输出到 ../dist/
 go test ./...      # 跑测试
 ```
 
-需要 Go 1.22+。
+需要 Go 1.22+。发布步骤和产物核对见 [构建与发布](docs/BUILD.md)。
 
 ---
 
@@ -357,7 +357,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | moo
 | `list_todos` | 待办列表 |
 | `get_todo` | 待办详情（含附件） |
 | `get_todo_image` | 读取待办图片 |
-| `create_todo` | 记录待办（需 `mcp:write`） |
+| `create_todo` | 记录待办并附图（需 `mcp:write`） |
 | `resolve_issue` | 标记问题已解决（需 `mcp:write`） |
 | `update_todo_status` | 认领/完成待办（需 `mcp:write`） |
 
@@ -380,6 +380,10 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | moo
 # 手动写一条
 moo-cloud todo add --project=my-project --title="修复登录页报错"
 
+# 带截图，可重复 --image 指定多张
+moo-cloud todo add --project=my-project --title="查询没有反应" \
+  --image="/absolute/path/screenshot.png" --image="/absolute/path/error.png"
+
 # 从一条问题生成标题/描述，并带上来源
 moo-cloud todo add --project=my-project --from-issue=runtime:abcdef123456
 
@@ -393,10 +397,28 @@ moo-cloud todo add --project=my-project --title="补充回归用例" \
 - 首次创建调用只返回项目确认信息，**不写库**；CLI 会显示项目名并询问 `y/N`
 - 非交互环境（脚本/AI）必须加 `--yes`，否则直接报错
 - 需要 `mcp:write`
-- 同项目、同标题且未完成（`open` / `in_progress`）时复用已有待办，返回 `deduped: true`
+- 同项目、同标题且未完成（`open` / `in_progress`）时复用已有待办，返回 `deduped: true`；带图时追加新图，相同图片不重复保存
+- 支持 PNG/JPEG/WebP/GIF，最多 5 张图片（含已有图片），每张原始文件不超过 8 MiB、1600 万像素；图片保存在 cloud 的私有附件区
+- 图片无效或保存失败会报错，并回滚本次创建或补图；返回 `images_attached`（已处理的输入张数，含重复）、`images_added`（实际新增张数）和 `todo.attachments_count`
+- CLI 收不到完整图片保存回执时会报错；若错误带有待办 ID，先检查该记录附件，重试请保留相同标题与图片
 - 新待办默认 `ai_policy=auto`；`--assignee` 可填 `me`（默认）或项目成员邮箱
 - 免费项目待办配额满时拒绝新建，不会淘汰已有待办；相同标题的未完成待办仍可复用
 - `--from-issue` 支持 `runtime` / `slow_query` / `frontend_error` / `app_error`
+
+Agent 通过本地 MCP 桥创建待办时，用 `image_paths` 传入截图的**绝对文件路径**，由 CLI 读取并上传：
+
+```json
+{
+  "project": "my-project",
+  "title": "查询没有反应",
+  "description": "选择筛选条件后，点击查询，列表未刷新。",
+  "image_paths": ["/absolute/path/screenshot.png"]
+}
+```
+
+首次调用返回项目预览与 `confirm_token`；确认后第二次调用保留相同参数和图片，再加上该令牌。直接连接 cloud 的 HTTP MCP 时，使用 `images` 数组传 `data:image/png;base64,...`，与本地 `image_paths` 二选一。
+
+聊天附件不会自动进入工具参数。Agent 应把用户附图一起传入；如果客户端未提供可读的原图文件，应明确说明图片尚未上传。需要同时使用支持附图的 cloud 和 CLI，更新后重新连接 MCP 才会刷新工具参数。
 
 ### 9.2 检查与更新 CLI
 

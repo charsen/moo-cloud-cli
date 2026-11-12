@@ -137,6 +137,57 @@ func handleMcpLine(endpoint, token, line string, writer *bufio.Writer, updater *
 		return true, ""
 	}
 
+	requestedImages := 0
+	if method == "tools/call" && params.Name == "create_todo" {
+		var args map[string]json.RawMessage
+		_ = json.Unmarshal(params.Arguments, &args)
+		paths, hasPaths := args["image_paths"]
+		_, hasImages := args["images"]
+		if hasPaths || hasImages {
+			// 本机读文件同样要求合法的请求与响应 id；通知不得触发本机 I/O。
+			if !hasID {
+				return false, "带图片的工具调用必须带 id"
+			}
+			var rpcVersion string
+			_ = json.Unmarshal(msg["jsonrpc"], &rpcVersion)
+			validID := len(rawID) > 0 && (rawID[0] == '"' || rawID[0] == '-' || (rawID[0] >= '0' && rawID[0] <= '9'))
+			if rpcVersion != "2.0" || !validID || paramsErr != nil {
+				var id any
+				if validID {
+					id = json.RawMessage(rawID)
+				}
+				writeRaw(writer, map[string]any{"jsonrpc": "2.0", "id": id,
+					"error": map[string]any{"code": -32600, "message": "非法的图片工具请求"}})
+				return false, "非法的图片工具请求"
+			}
+			if hasPaths {
+				if hasImages {
+					return writeTodoImageError(writer, rawID, fmt.Errorf("image_paths 与 images 只能选择一种"))
+				}
+				var filenames []string
+				if json.Unmarshal(paths, &filenames) != nil || string(paths) == "null" {
+					return writeTodoImageError(writer, rawID, fmt.Errorf("image_paths 必须是图片绝对路径数组"))
+				}
+				images, err := loadTodoImages(filenames, true)
+				if err != nil {
+					return writeTodoImageError(writer, rawID, err)
+				}
+				delete(args, "image_paths")
+				args["images"], _ = json.Marshal(images)
+				var rawParams map[string]json.RawMessage
+				_ = json.Unmarshal(msg["params"], &rawParams)
+				rawParams["arguments"], _ = json.Marshal(args)
+				msg["params"], _ = json.Marshal(rawParams)
+				encoded, _ := json.Marshal(msg)
+				line = string(encoded)
+			}
+			var images []string
+			if json.Unmarshal(args["images"], &images) == nil {
+				requestedImages = len(images)
+			}
+		}
+	}
+
 	body, err := forwardMcp(endpoint, token, line)
 	if err != nil {
 		if hasID {
@@ -196,17 +247,43 @@ func handleMcpLine(endpoint, token, line string, writer *bufio.Writer, updater *
 					}
 				}
 				result["instructions"], _ = json.Marshal(strings.TrimSpace(instructions + "\n" + updateNotice))
-			} else if params.Cursor == "" {
+			} else {
 				var tools []json.RawMessage
 				if json.Unmarshal(result["tools"], &tools) == nil {
-					for _, tool := range updater.toolDefinitions() {
-						raw, _ := json.Marshal(tool)
-						tools = append(tools, raw)
+					for i := range tools {
+						tools[i] = todoImageToolDefinition(tools[i])
+					}
+					if params.Cursor == "" {
+						for _, tool := range updater.toolDefinitions() {
+							raw, _ := json.Marshal(tool)
+							tools = append(tools, raw)
+						}
 					}
 					result["tools"], _ = json.Marshal(tools)
 				}
 			}
 			response["result"], _ = json.Marshal(result)
+		}
+	}
+
+	if requestedImages > 0 && !hasError {
+		var result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		}
+		if json.Unmarshal(response["result"], &result) != nil {
+			return writeTodoImageError(writer, rawID, fmt.Errorf("云端图片保存响应格式错误，请检查附件后再重试"))
+		}
+		if !result.IsError {
+			data := map[string]any{}
+			if len(result.Content) > 0 {
+				_ = json.Unmarshal([]byte(result.Content[0].Text), &data)
+			}
+			if err := verifyTodoImages(data, requestedImages); err != nil {
+				return writeTodoImageError(writer, rawID, err)
+			}
 		}
 	}
 
@@ -307,4 +384,13 @@ func writeRaw(writer *bufio.Writer, v any) {
 	}
 	writer.Write(raw)
 	writer.WriteByte('\n')
+}
+
+// 本机图片错误使用 MCP 工具错误，Agent 可直接向用户说明，不伪装成上传成功。
+func writeTodoImageError(writer *bufio.Writer, id json.RawMessage, err error) (bool, string) {
+	text, _ := json.Marshal(map[string]any{"error": err.Error()})
+	writeRaw(writer, map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{
+		"content": []map[string]any{{"type": "text", "text": string(text)}}, "isError": true,
+	}})
+	return false, err.Error()
 }
