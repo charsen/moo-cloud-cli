@@ -206,9 +206,9 @@ moo-cloud preflight --fetch --types=todo --out=moo-cloud-reports/todos
 
 ### 7.1 云端项目 vs 本地仓库
 
-云端一个「项目」通常对应本地一个仓库；一个仓库也可能服务多个项目（多环境/多客户）。
+cloud 项目用于协作和数据隔离，一个项目可包含多个软件；软件是检查更新、反馈和客户端异常的身份。一个软件可以对应多个本地仓库，一个仓库也可能服务多个项目（多环境/多客户）。
 
-`.moo-cloud.json` 就是这张对照表，放在**仓库根目录**。
+`.moo-cloud.json` 就是这张对照表，放在**仓库根目录**，供 `preflight` 预检使用。MCP 连接由账号 Token 和客户端服务器配置建立；`mcp-server` 不读取此文件，文件也不改变账号权限或自动限定工具调用的项目。
 
 ### 7.2 后端仓库 marker
 
@@ -234,7 +234,6 @@ moo-cloud preflight --fetch --types=todo --out=moo-cloud-reports/todos
 ```json
 {
   "role": "app",
-  "root": ".",
   "product": "my-app",
   "project": "my-project",
   "platforms": ["android", "ios"],
@@ -244,7 +243,19 @@ moo-cloud preflight --fetch --types=todo --out=moo-cloud-reports/todos
 }
 ```
 
-`verify` 是包名指纹：文件存在且包含指定字符串才算对上，防止认错仓库。
+App 默认模板只保留五类字段：
+
+| 字段 | 用途 |
+| --- | --- |
+| `role` | `app` 明确表示 App / 桌面 / Web 仓库 |
+| `project` | cloud 项目 slug，确定协作和数据归属 |
+| `product` | 该项目下的软件 slug，与客户端的 `app` 标识对应 |
+| `platforms` | 本仓库负责的平台，供报告和 Agent 区分多仓库；不会限制 MCP 权限 |
+| `verify` | 本地包名指纹：文件存在且包含指定字符串，防止认错仓库 |
+
+同一软件可对应多个本地仓库：分别填写相同 `project`、`product`，用 `platforms` 和各自的 `verify` 区分。不要为了拆 Android / iOS 仓库而拆成两个软件。
+
+App 分支不使用 `root`；本地 `identifiers` 也不参与 CLI 解析，因此默认模板不再填写。cloud 中已有的可选包名资料、仓库链接和现有配置仍保留；后端的 `root`、`deployments`、`env_file` 继续明确配置，不自动猜目录或环境文件。
 
 App marker 的 `project` 与 `product` 都必填。在线检查使用账号级 Token 调用 `list_apps`，确认软件属于该项目；通过后可独立拉取队列。`--offline` 仅检查本地指纹，不验证云端归属。
 
