@@ -83,7 +83,7 @@ Windows（PowerShell）：
 ```powershell
 # 1. 存 token
 New-Item -ItemType Directory -Force "$env:USERPROFILE\.config\moo-fleet" | Out-Null
-Set-Content -NoNewline -Path "$env:USERPROFILE\.config\moo-fleet\mcp-token" -Value '<moo_mcp_...>'
+Set-Content -NoNewline -Encoding ascii -Path "$env:USERPROFILE\.config\moo-fleet\mcp-token" -Value '<moo_mcp_...>'
 
 # 2. 在工作区根目录执行
 cd C:\path\to\workspace
