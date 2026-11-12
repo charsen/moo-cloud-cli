@@ -14,15 +14,17 @@ import (
 )
 
 type pfOptions struct {
-	root    string
-	date    string
-	out     string
-	token   string
-	cloud   string
-	limit   string
-	types   string
-	offline bool
-	fetch   bool
+	root        string
+	date        string
+	out         string
+	token       string
+	cloud       string
+	limit       string
+	types       string
+	concurrency string
+	offline     bool
+	fetch       bool
+	json        bool
 }
 
 type markerFile struct {
@@ -73,7 +75,7 @@ func runPreflight(args []string) int {
 
   --root=<dir>   --date=<Y-m-d>   --out=<dir>
   --offline      --fetch          --types=<list>
-  --token=       --cloud=         --limit=<n>
+  --token=       --cloud=         --limit=<n>   --concurrency=<n>   --json
 `)
 
 		return 0
@@ -127,7 +129,7 @@ func runPreflight(args []string) int {
 	if opts.fetch {
 		switch {
 		case opts.token == "":
-			fmt.Fprintln(os.Stderr, "--fetch 需要账号级 token：--token=moo_pat_xxx 或环境变量 MOO_CLOUD_MCP_TOKEN")
+			fmt.Fprintln(os.Stderr, "--fetch 需要账号级 token：--token=moo_mcp_xxx 或环境变量 MOO_CLOUD_MCP_TOKEN")
 			fatal++
 			queueError = "缺少账号级 token"
 		case len(projectSet) == 0:
@@ -188,12 +190,17 @@ func runPreflight(args []string) int {
 		})
 	}
 
-	suffix := ""
-	if opts.fetch {
-		suffix = " + fetch"
+	if opts.json {
+		raw, _ := json.MarshalIndent(payload, "", "    ")
+		fmt.Println(string(raw))
+	} else {
+		suffix := ""
+		if opts.fetch {
+			suffix = " + fetch"
+		}
+		fmt.Printf("preflight: %d 个仓库, 硬失败 %d, 致命 %d, 模式 %s%s\n输出: %s\n",
+			len(reports), hardFailures, fatal, mode, suffix, outDir)
 	}
-	fmt.Printf("preflight: %d 个仓库, 硬失败 %d, 致命 %d, 模式 %s%s\n输出: %s\n",
-		len(reports), hardFailures, fatal, mode, suffix, outDir)
 
 	if fatal > 0 {
 		return 1
@@ -205,17 +212,19 @@ func runPreflight(args []string) int {
 func parsePfOptions(args []string) pfOptions {
 	cwd, _ := os.Getwd()
 	opts := pfOptions{
-		root:  cwd,
-		date:  time.Now().In(cst).Format("2006-01-02"),
-		token: initialToken(),
-		cloud: os.Getenv("MOO_CLOUD_URL"),
-		limit: "5",
-		types: "runtime,slow_query,frontend_error,app_error",
+		root:        cwd,
+		date:        time.Now().In(cst).Format("2006-01-02"),
+		token:       initialToken(),
+		cloud:       os.Getenv("MOO_CLOUD_URL"),
+		limit:       "5",
+		types:       "runtime,slow_query,frontend_error,app_error",
+		concurrency: "4",
 	}
 
 	known := map[string]*string{
 		"root": &opts.root, "date": &opts.date, "out": &opts.out,
 		"token": &opts.token, "cloud": &opts.cloud, "limit": &opts.limit, "types": &opts.types,
+		"concurrency": &opts.concurrency,
 	}
 
 	for _, arg := range args {
@@ -225,17 +234,20 @@ func parsePfOptions(args []string) pfOptions {
 			continue
 		}
 		key, value, hasValue := strings.Cut(arg[2:], "=")
-		if key == "offline" || key == "fetch" {
+		if key == "offline" || key == "fetch" || key == "json" {
 			enabled := true
 			if hasValue {
 				if parsed, err := strconv.ParseBool(value); err == nil {
 					enabled = parsed
 				}
 			}
-			if key == "offline" {
+			switch key {
+			case "offline":
 				opts.offline = enabled
-			} else {
+			case "fetch":
 				opts.fetch = enabled
+			case "json":
+				opts.json = enabled
 			}
 
 			continue
@@ -589,7 +601,17 @@ func fetchQueue(cloud string, opts pfOptions, projects []string) (map[string]map
 	// 项目间并发（最多 4 个），每个项目内部仍按类型顺序拉取；结果写回由 mutex 保护。
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 4)
+	concurrency := 4
+	if n, err := strconv.Atoi(opts.concurrency); err == nil {
+		concurrency = n
+	}
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	if concurrency > 16 {
+		concurrency = 16
+	}
+	sem := make(chan struct{}, concurrency)
 
 	for _, project := range projects {
 		if !contains(known, project) {

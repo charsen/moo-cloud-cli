@@ -28,6 +28,7 @@
 | Linux x86_64 | `moo-cloud-linux-amd64` |
 | Linux arm64 | `moo-cloud-linux-arm64` |
 | Windows x86_64 | `moo-cloud-windows-amd64.exe` |
+| Windows arm64 | `moo-cloud-windows-arm64.exe` |
 
 ```bash
 cp dist/moo-cloud-darwin-arm64 ./moo-cloud && chmod +x ./moo-cloud
@@ -42,7 +43,7 @@ xattr -d com.apple.quarantine ./moo-cloud   # 仅 macOS 首次运行需要
 ```bash
 # 1. 存 token（只读一次，权限 600）
 mkdir -p ~/.config/moo-fleet
-printf '%s' '<moo_pat_...>' > ~/.config/moo-fleet/mcp-token
+printf '%s' '<moo_mcp_...>' > ~/.config/moo-fleet/mcp-token
 chmod 600 ~/.config/moo-fleet/mcp-token
 
 # 2. 在工作区根目录执行
@@ -282,6 +283,8 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | ./m
 | `--token=` | 账号级 MCP token；默认读 `MOO_CLOUD_MCP_TOKEN` 或 `~/.config/moo-fleet/mcp-token` |
 | `--cloud=` | cloud 地址，默认 `https://c.mooeen.com`（也接受 `MOO_CLOUD_URL`） |
 | `--limit=` | 每项目每类最多拉取条数（1–50，默认 5）；frontend/app 会翻页补足后再截断 |
+| `--concurrency=` | 项目间并发数（1–16，默认 4） |
+| `--json` | 输出机器可读的 preflight 结果 |
 
 取值参数必须带 `=`（裸写 `--root` 会被忽略并告警）；`--types=` 为空或全是未知类型会直接失败，
 不会静默产出一份空队列。

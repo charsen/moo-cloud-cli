@@ -15,6 +15,7 @@ dist:
 	GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o ../dist/$(BIN)-linux-amd64   $(PKGS)
 	GOOS=linux   GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o ../dist/$(BIN)-linux-arm64   $(PKGS)
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o ../dist/$(BIN)-windows-amd64.exe $(PKGS)
+	GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o ../dist/$(BIN)-windows-arm64.exe $(PKGS)
 
 test:
 	go test ./...
