@@ -438,3 +438,125 @@ func mustRead(t *testing.T, path string) []byte {
 
 	return raw
 }
+
+func TestAddTodoSendsCreateTool(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+			Params struct {
+				Name      string         `json:"name"`
+				Arguments map[string]any `json:"arguments"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		if req.Method == "tools/call" && req.Params.Name == "create_todo" {
+			got = req.Params.Arguments
+		}
+		text, _ := json.Marshal(map[string]any{
+			"project": "p1", "deduped": false,
+			"todo": map[string]any{"id": "01ABC", "title": req.Params.Arguments["title"], "status": "open"},
+		})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0", "id": req.ID,
+			"result": map[string]any{
+				"content": []map[string]any{{"type": "text", "text": string(text)}},
+				"isError": false,
+			},
+		})
+	}))
+	defer srv.Close()
+
+	result, err := addTodo(todoOptions{
+		project: "p1", title: "修复登录页", token: "t", cloud: srv.URL,
+		assignee: "member@example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["title"] != "修复登录页" || got["category"] != "bug" || got["priority"] != "normal" {
+		t.Fatalf("create_todo 参数不对：%+v", got)
+	}
+	if got["assignee"] != "member@example.com" {
+		t.Fatalf("assignee 未透传：%+v", got)
+	}
+	if result["deduped"] != false {
+		t.Fatalf("应返回未去重结果：%+v", result)
+	}
+}
+
+func TestAddTodoFromIssueDerivesTitleAndSource(t *testing.T) {
+	var createArgs map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+			Params struct {
+				Name      string         `json:"name"`
+				Arguments map[string]any `json:"arguments"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		var data any
+		switch req.Params.Name {
+		case "get_issue":
+			data = map[string]any{
+				"project": "p1", "type": "runtime",
+				"issue": map[string]any{
+					"exception": map[string]any{"class": "RuntimeException", "message": "boom"},
+					"markdown":  "## 运行时错误\n堆栈",
+				},
+			}
+		case "create_todo":
+			createArgs = req.Params.Arguments
+			data = map[string]any{
+				"project": "p1", "deduped": true,
+				"todo": map[string]any{"id": "01XYZ", "title": createArgs["title"], "status": "open"},
+			}
+		}
+		text, _ := json.Marshal(data)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0", "id": req.ID,
+			"result": map[string]any{
+				"content": []map[string]any{{"type": "text", "text": string(text)}},
+				"isError": false,
+			},
+		})
+	}))
+	defer srv.Close()
+
+	if _, err := addTodo(todoOptions{
+		project: "p1", fromIssue: "runtime:abcdef123456", token: "t", cloud: srv.URL,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	title, _ := createArgs["title"].(string)
+	if !strings.Contains(title, "RuntimeException") || !strings.Contains(title, "boom") {
+		t.Fatalf("标题应由异常生成：%q", title)
+	}
+	source, _ := createArgs["source"].(map[string]any)
+	if source["type"] != "runtime" || source["key"] != "abcdef123456" {
+		t.Fatalf("来源不对：%+v", source)
+	}
+	if createArgs["description"] == "" {
+		t.Fatal("应从问题 markdown 补描述")
+	}
+}
+
+func TestParseTodoOptionsRejectsBadInput(t *testing.T) {
+	cases := [][]string{
+		{"--title=x"},
+		{"--project=p", "--title=x", "--category=nope"},
+		{"--project=p", "--title=x", "--source-type=runtime"},
+		{"--project=p", "--from-issue=runtime:bad"},
+	}
+	for _, args := range cases {
+		if _, err := parseTodoOptions(args); err == nil {
+			t.Fatalf("应报错：%v", args)
+		}
+	}
+}

@@ -22,6 +22,8 @@ func main() {
 		os.Exit(runMcpServer(args[1:]))
 	case "agent-config":
 		os.Exit(runAgentConfig(args[1:]))
+	case "todo":
+		os.Exit(runTodo(args[1:]))
 	case "version", "--version", "-v":
 		fmt.Println("moo-cloud " + version)
 		os.Exit(0)
@@ -42,6 +44,7 @@ func printHelp() {
   moo-cloud preflight [选项]        身份校验 + 拉取异常/待办队列
   moo-cloud mcp-server [选项]       本地 stdio MCP 桥（给 Codex / WorkBuddy 等）
   moo-cloud agent-config [选项]     生成/写入各客户端的 MCP 配置
+  moo-cloud todo add [选项]         记录一条云端待办
 
 preflight:
   --root=<dir>      工作区根目录（默认当前目录）
@@ -59,6 +62,12 @@ preflight:
 
 mcp-server:
   --token=<token>   --cloud=<url>   --log=<file>
+
+todo add:
+  --project=<slug>  目标项目（必填）
+  --title=<text>    待办标题（或用 --from-issue 自动生成）
+  --from-issue=runtime:<key>  从问题生成标题/描述并记录来源
+  --json            输出机器可读 JSON
 
 agent-config:
   --target=codex|workbuddy|json|claude

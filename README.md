@@ -194,6 +194,7 @@ moo-cloud preflight --fetch --types=todo --out=moo-cloud-reports/todos
 | `moo-cloud preflight` | 身份校验 + 拉取问题/待办（主命令） |
 | `moo-cloud mcp-server` | 本地 stdio MCP 桥，给 AI 客户端用 |
 | `moo-cloud agent-config` | 生成/写入客户端的 MCP 配置 |
+| `moo-cloud todo add` | 记录一条云端待办（可选从问题生成） |
 | `moo-cloud --version` | 查看版本 |
 | `moo-cloud --help` | 查看子命令 |
 
@@ -354,12 +355,37 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | moo
 | `list_todos` | 待办列表 |
 | `get_todo` | 待办详情（含附件） |
 | `get_todo_image` | 读取待办图片 |
+| `create_todo` | 记录待办（需 `mcp:write`） |
 | `resolve_issue` | 标记问题已解决（需 `mcp:write`） |
 | `update_todo_status` | 认领/完成待办（需 `mcp:write`） |
 
 写操作会校验「处理范围 + 策略」：范围外或 `confirm/hold` 会返回 403。
 
 ---
+
+### 9.1 记录待办
+
+除了拉取，也可以把发现的问题或后续事项记到云端项目：
+
+```bash
+# 手动写一条
+moo-cloud todo add --project=colorfulhome --title="修复登录页报错"
+
+# 从一条问题生成标题/描述，并带上来源
+moo-cloud todo add --project=colorfulhome --from-issue=runtime:abcdef123456
+
+# 指定类型/优先级/指派给项目成员，输出 JSON
+moo-cloud todo add --project=colorfulhome --title="补充回归用例" \
+  --category=task --priority=high --assignee=dev@example.com --json
+```
+
+规则：
+
+- 需要 `mcp:write`
+- 同项目、同标题且未完成（`open` / `in_progress`）时复用已有待办，返回 `deduped: true`
+- 新待办默认 `ai_policy=auto`；`--assignee` 可填 `me`（默认）或项目成员邮箱
+- 免费项目待办配额满时返回错误，不会淘汰已有待办
+- `--from-issue` 支持 `runtime` / `slow_query` / `frontend_error` / `app_error`
 
 ## 10. 输出与可观测性
 
