@@ -24,6 +24,8 @@ func main() {
 		os.Exit(runAgentConfig(args[1:]))
 	case "todo":
 		os.Exit(runTodo(args[1:]))
+	case "comment":
+		os.Exit(runComment(args[1:]))
 	case "version", "--version", "-v":
 		fmt.Println("moo-cloud " + version)
 		os.Exit(0)
@@ -45,6 +47,7 @@ func printHelp() {
   moo-cloud mcp-server [选项]       本地 stdio MCP 桥（给 Codex / WorkBuddy 等）
   moo-cloud agent-config [选项]     生成/写入各客户端的 MCP 配置
   moo-cloud todo add [选项]         记录一条云端待办
+  moo-cloud comment list|add [选项] 查询或发表异常/TODO 的文字评论
 
 preflight:
   --root=<dir>      当前仓库或工作区目录（默认当前目录）

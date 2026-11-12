@@ -102,6 +102,7 @@ func codexBlock(exe string) string {
 	readTools := []string{
 		"list_projects", "list_issues", "get_issue", "get_issue_markdown",
 		"list_apps", "list_todos", "get_todo", "get_todo_image",
+		"list_comments",
 	}
 	var b strings.Builder
 	b.WriteString("[mcp_servers.moo_cloud]\n")

@@ -207,6 +207,8 @@ App 的项目、身份校验结果及失败原因会同时显示在 Markdown 和
 | `moo-cloud mcp-server` | 本地 stdio MCP 桥，给 AI 客户端用 |
 | `moo-cloud agent-config` | 生成/写入客户端的 MCP 配置 |
 | `moo-cloud todo add` | 记录一条云端待办（可选从问题生成） |
+| `moo-cloud comment list` | 分页查询某条异常或 TODO 的讨论 |
+| `moo-cloud comment add` | 发表文字评论，与网页讨论共用数据 |
 | `moo-cloud --version` | 查看版本 |
 | `moo-cloud --help` | 查看子命令 |
 
@@ -313,7 +315,7 @@ codex mcp list | grep moo_cloud
 codex exec --skip-git-repo-check "调用 moo_cloud 的 list_projects 工具，只回答项目数量"
 ```
 
-生成的配置会对 8 个只读工具自动批准；`resolve_issue` / `update_todo_status` 仍会请求人工批准。
+生成的配置会对 9 个只读工具自动批准（含 `list_comments`）；`post_comment`、`resolve_issue`、`update_todo_status` 等写工具仍会请求人工批准。已有配置需重新生成并重连后才会更新白名单。
 
 ### 8.2 WorkBuddy
 
@@ -388,6 +390,8 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | moo
 | `list_todos` | 待办列表 |
 | `get_todo` | 待办详情（含附件） |
 | `get_todo_image` | 读取待办图片 |
+| `list_comments` | 分页查询异常或 TODO 的团队讨论 |
+| `post_comment` | 发表文字评论（需 `mcp:write`，先取得用户同意） |
 | `create_todo` | 记录待办并附图（需 `mcp:write`） |
 | `resolve_issue` | 标记问题已解决（需 `mcp:write`） |
 | `update_todo_status` | 认领/完成待办（需 `mcp:write`） |
@@ -468,6 +472,22 @@ MCP 连接初始化时自动检查发布版本，成功结果缓存 24 小时。
 发布信息或附件下载失败都会尝试备用源，备用源必须提供用户确认的同一版本。更新期间用系统锁防止多个客户端同时替换；进程异常结束后锁自动释放。如果期间被其他方式安装了新文件，本次更新会停止并要求重新检查。
 
 完成后**重新连接 MCP 或重启客户端**，已运行的进程继续使用旧版本。若 Windows 锁住正在运行的程序，或安装目录不可写，会保留原文件并提示手动更新；不会强行退出客户端。
+
+### 9.3 查询与发表评论
+
+沿用现有账号 Token 和 cloud 地址，无需修改 `.moo-cloud.json`。异常使用原有 key，TODO 使用原有 ID：
+
+```bash
+moo-cloud comment list --project=my-project --type=runtime --key=abcdef123456
+moo-cloud comment list --project=my-project --type=todo --id=01ARZ3NDEKTSV4RRFFQ69G5FAV --limit=20 --offset=0 --json
+moo-cloud comment add --project=my-project --type=runtime --key=abcdef123456 --body="已补充复现步骤"
+```
+
+`--type` 支持 `runtime`、`slow_query`、`frontend_error`、`app_error`、`todo`；异常只传 `--key`，TODO 只传 `--id`。查询按时间正序分页，有后续评论时返回 `next_offset`；下一次设置 `--offset`。已有附图返回数量，可在网页讨论查看。
+
+发表文字需 `mcp:write`、有效处理范围且目标策略为 `auto`，正文为 1–5000 字。命令会询问确认；自动化调用需先获用户同意，再加 `--yes`。同账号、同记录、相同正文在 2 分钟内复用已有评论，避免重试重复评论或通知。已完成/已解决记录仍可讨论，不改变状态；删除或无权访问的记录不可操作。
+
+MCP 中调用 `list_comments` / `post_comment`，参数为 `project`、`type`、`key` 或 `id`，发表时再传 `body`。写评论不加入自动批准白名单；本次只支持文字发表。cloud 部署评论工具后重连 MCP 获取新工具定义；本地 `comment` 命令需使用包含本轮功能的 CLI。
 
 ## 10. 输出与可观测性
 
