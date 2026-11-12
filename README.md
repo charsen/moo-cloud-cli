@@ -210,6 +210,8 @@ cloud 项目用于协作和数据隔离，一个项目可包含多个软件；�
 
 `.moo-cloud.json` 就是这张对照表，放在**仓库根目录**，供 `preflight` 预检使用。MCP 连接由账号 Token 和客户端服务器配置建立；`mcp-server` 不读取此文件，文件也不改变账号权限或自动限定工具调用的项目。
 
+预检命令的 `--root` 指向包含这些仓库的工作区目录，例如 `moo-cloud preflight --root=/path/to/workspace --offline`；当前扫描其下一层和下两层仓库。这个命令参数与后端 marker 内的 `root` 用途不同。
+
 ### 7.2 后端仓库 marker
 
 ```json
@@ -256,6 +258,10 @@ App 默认模板只保留五类字段：
 同一软件可对应多个本地仓库：分别填写相同 `project`、`product`，用 `platforms` 和各自的 `verify` 区分。不要为了拆 Android / iOS 仓库而拆成两个软件。
 
 App 分支不使用 `root`；本地 `identifiers` 也不参与 CLI 解析，因此默认模板不再填写。cloud 中已有的可选包名资料、仓库链接和现有配置仍保留；后端的 `root`、`deployments`、`env_file` 继续明确配置，不自动猜目录或环境文件。
+
+维护已有 App marker 时，删除未使用的 `root`、`identifiers` 即可，保留原 `project`、`product`、`platforms` 和 `verify`。包名指纹仍通过 `verify[].contains` 校验；Cloud 软件的可选包名资料无需删除。此精简不修改后端 marker 的 `root`、`deployments` 或 `env_file`。
+
+软件版本发布不由 marker 驱动。各仓保留自身 `docs/BUILD.md`，后台操作统一见 [Cloud 软件发版手册](../moo-scaffold-cloud/docs/RELEASE-PLAYBOOK.md)；不要向 marker 增加版本、文件、哈希、签名或发布 Token。
 
 App marker 的 `project` 与 `product` 都必填。在线检查使用账号级 Token 调用 `list_apps`，确认软件属于该项目；通过后可独立拉取队列。`--offline` 仅检查本地指纹，不验证云端归属。
 
