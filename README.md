@@ -184,19 +184,23 @@ DSH 通过内置的 `@deepseek-ai/dsh-mcp-client` 插件加载 MCP，**不使用
 在 `~/.dsh/profiles/desktop/cordis.patch.yml` 末尾追加一条：
 
 ```yaml
-- id: mcp-moo-cloud
-  name: '@deepseek-ai/dsh-mcp-client'
-  config:
-    serverName: moo-cloud
-    transport: stdio
-    command: /path/to/moo-cloud
-    args: ['mcp-server']
-    toolCallTimeoutMs: 120000
+- insert:
+    - id: mcp-moo-cloud
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: moo-cloud
+        transport: stdio
+        command: /path/to/moo-cloud
+        args: ['mcp-server']
+        toolCallTimeoutMs: 120000
 ```
 
+注意必须是 `- insert:` 列表：直接写 `- id:` 只会覆盖已存在的条目，
+**新增插件不会生效**。
+
 把 `command` 换成二进制绝对路径（例如 `.../dist/moo-cloud-darwin-arm64`）。
-保存后插件会原地重载；没生效就重启 DSH。工具会以
-`mcp__moo-cloud__list_projects` 这种带命名空间的形式出现。
+保存后插件会原地重载；工具会以 `mcp__moo-cloud__list_projects`
+这种带命名空间的形式出现。
 
 注意：
 
