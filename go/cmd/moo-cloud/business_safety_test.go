@@ -12,33 +12,6 @@ import (
 	"testing"
 )
 
-func replyTodoDefinitions(w http.ResponseWriter, id any) {
-	_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{"tools": []any{
-		map[string]any{"name": "create_todo", "inputSchema": map[string]any{"properties": map[string]any{"confirm_token": map[string]any{"type": "string"}}}},
-	}}})
-}
-
-func TestTodoRefusesLegacyCloudWithoutCallingCreate(t *testing.T) {
-	for _, yes := range []bool{false, true} {
-		calls := 0
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			var req struct {
-				Method string `json:"method"`
-			}
-			_ = json.NewDecoder(r.Body).Decode(&req)
-			if req.Method != "tools/list" {
-				calls++
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"tools": []any{map[string]any{"name": "create_todo"}}}})
-		}))
-		_, err := addTodo(todoOptions{project: "p", title: "audit", token: "fake", cloud: server.URL, yes: yes})
-		server.Close()
-		if err == nil || calls != 0 {
-			t.Fatalf("yes=%v err=%v write calls=%d", yes, err, calls)
-		}
-	}
-}
-
 func TestMcpBridgeNormalizesHttpAndProtocolErrors(t *testing.T) {
 	cases := []struct {
 		name   string

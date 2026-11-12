@@ -371,19 +371,18 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | moo
 
 ```bash
 # 手动写一条
-moo-cloud todo add --project=colorfulhome --title="修复登录页报错"
+moo-cloud todo add --project=my-project --title="修复登录页报错"
 
 # 从一条问题生成标题/描述，并带上来源
-moo-cloud todo add --project=colorfulhome --from-issue=runtime:abcdef123456
+moo-cloud todo add --project=my-project --from-issue=runtime:abcdef123456
 
 # 指定类型/优先级/指派给项目成员，输出 JSON（自动化需 --yes）
-moo-cloud todo add --project=colorfulhome --title="补充回归用例" \
+moo-cloud todo add --project=my-project --title="补充回归用例" \
   --category=task --priority=high --assignee=dev@example.com --yes --json
 ```
 
 规则：
 
-- CLI 先用只读 `tools/list` 确认 cloud 支持 `confirm_token`；旧服务端或没有写权限时直接拒绝，不尝试创建
 - 首次创建调用只返回项目确认信息，**不写库**；CLI 会显示项目名并询问 `y/N`
 - 非交互环境（脚本/AI）必须加 `--yes`，否则直接报错
 - 需要 `mcp:write`

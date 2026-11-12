@@ -446,10 +446,6 @@ func TestAddTodoSendsCreateTool(t *testing.T) {
 			} `json:"params"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		if req.Method == "tools/list" {
-			replyTodoDefinitions(w, req.ID)
-			return
-		}
 
 		var payload any
 		if req.Method == "tools/call" && req.Params.Name == "create_todo" {
@@ -508,10 +504,6 @@ func TestAddTodoFromIssueDerivesTitleAndSource(t *testing.T) {
 			} `json:"params"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		if req.Method == "tools/list" {
-			replyTodoDefinitions(w, req.ID)
-			return
-		}
 
 		var data any
 		switch req.Params.Name {
@@ -597,9 +589,9 @@ func TestAddTodoTwoPhaseConfirmation(t *testing.T) {
 			} `json:"params"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		if req.Method == "tools/list" {
-			replyTodoDefinitions(w, req.ID)
-			return
+
+		if req.Method != "tools/call" || req.Params.Name != "create_todo" {
+			t.Errorf("应直接调用 create_todo，实际 %s %s", req.Method, req.Params.Name)
 		}
 
 		var data any
@@ -634,8 +626,8 @@ func TestAddTodoTwoPhaseConfirmation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 3 {
-		t.Fatalf("应先探测能力再调用两次 MCP，实际 %d", calls)
+	if calls != 2 {
+		t.Fatalf("应直接调用两次 create_todo 完成预览和确认，实际 %d", calls)
 	}
 	if confirmed["confirm_token"] != "tok-123" {
 		t.Fatalf("确认令牌未回传：%+v", confirmed)
