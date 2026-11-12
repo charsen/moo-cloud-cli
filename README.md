@@ -294,6 +294,8 @@ App marker 的 `project` 与 `product` 都必填。在线检查使用账号级 T
 
 `moo-cloud mcp-server` 是一个本地 stdio MCP 桥：客户端只需要 `command + args`，token 和云端地址由桥自己读取。
 
+本机工具与 cloud 使用相同的请求边界：`jsonrpc` 为 `2.0`，请求 `id` 为字符串或有符号 64 位整数（允许 `0`、空字符串）。非法 ID 不会触发本机更新或图片读取；无 ID 的通知不执行工具。
+
 先生成配置（在目标电脑上执行，它会写入**当前二进制自身的绝对路径**）：
 
 ```bash

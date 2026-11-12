@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -96,9 +97,7 @@ func handleMcpLine(endpoint, token, line string, writer *bufio.Writer, updater *
 	}
 
 	rawID, hasID := msg["id"]
-	if hasID && string(rawID) == "null" {
-		hasID = false
-	}
+	// 仅缺少 id 才是通知；显式 null 须返回协议错误，与 cloud 保持一致。
 	var method string
 	_ = json.Unmarshal(msg["method"], &method)
 	var params struct {
@@ -115,7 +114,7 @@ func handleMcpLine(endpoint, token, line string, writer *bufio.Writer, updater *
 		var rpcVersion string
 		_ = json.Unmarshal(msg["jsonrpc"], &rpcVersion)
 		// 云端原先负责协议验证；本机拦截的写工具也必须验证请求，不能绕过这层边界。
-		validID := len(rawID) > 0 && (rawID[0] == '"' || rawID[0] == '-' || (rawID[0] >= '0' && rawID[0] <= '9'))
+		validID := validMcpID(rawID)
 		if rpcVersion != "2.0" || !validID || paramsErr != nil {
 			var id any
 			if validID {
@@ -154,7 +153,7 @@ func handleMcpLine(endpoint, token, line string, writer *bufio.Writer, updater *
 			}
 			var rpcVersion string
 			_ = json.Unmarshal(msg["jsonrpc"], &rpcVersion)
-			validID := len(rawID) > 0 && (rawID[0] == '"' || rawID[0] == '-' || (rawID[0] >= '0' && rawID[0] <= '9'))
+			validID := validMcpID(rawID)
 			if rpcVersion != "2.0" || !validID || paramsErr != nil {
 				var id any
 				if validID {
@@ -303,6 +302,17 @@ func handleMcpLine(endpoint, token, line string, writer *bufio.Writer, updater *
 		return false, "云端工具执行失败"
 	}
 	return true, ""
+}
+
+// 与 cloud 的请求边界一致：字符串或有符号 64 位整数。
+// 不用首字符或 float64 判断，避免小数/科学计数法/溢出 ID 触发本机写入或文件读取。
+func validMcpID(raw json.RawMessage) bool {
+	if len(raw) > 0 && raw[0] == '"' {
+		var id string
+		return json.Unmarshal(raw, &id) == nil
+	}
+	_, err := strconv.ParseInt(string(raw), 10, 64)
+	return err == nil
 }
 
 /** MCP 桥调用日志：一行一条 JSON，默认关闭（--log=<file> 开启）。 */
