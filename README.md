@@ -309,11 +309,6 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | ./m
 | 报告目录日期不对 | 日期按 Asia/Shanghai；可用 `--date=YYYY-MM-DD` 指定 |
 | 报“部署指向多个云端” | 各部署的 `MOO_MONITOR_CLOUD_URL` 不一致，用 `--cloud=` 显式指定拉取目标 |
 
-## 旧版 PHP 入口
-
-`bin/preflight`、`bin/mcp-server`、`bin/agent-config` 是迁移前的 PHP 实现，保留给已有安装与夜间任务；
-新机器一律用 `dist/` 二进制，功能与参数一致。
-
 ## 安全
 
 - host token 只从本地 `.env*` 读取，不打印、不写日志；
