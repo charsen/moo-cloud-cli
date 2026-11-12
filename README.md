@@ -30,15 +30,39 @@
 | Windows x86_64 | `moo-cloud-windows-amd64.exe` |
 | Windows arm64 | `moo-cloud-windows-arm64.exe` |
 
+macOS / Linux：
+
 ```bash
-cp dist/moo-cloud-darwin-arm64 ./moo-cloud && chmod +x ./moo-cloud
+cp dist/moo-cloud-darwin-arm64 ./moo-cloud
+chmod +x ./moo-cloud
 xattr -d com.apple.quarantine ./moo-cloud   # 仅 macOS 首次运行需要
+```
+
+Windows（PowerShell）：
+
+```powershell
+Copy-Item .\dist\moo-cloud-windows-amd64.exe .\moo-cloud.exe
+# 不需要 chmod；首次运行如被 SmartScreen 拦截，选择“仍要运行”
 ```
 
 从源码构建：`cd go && make dist`（需要 Go 1.22+）；测试：`cd go && go test ./...`。
 `moo-cloud --version` 查看构建版本（由 git describe 注入）。
 
+### 平台差异
+
+| 项 | macOS / Linux | Windows |
+|---|---|---|
+| 可执行文件 | `moo-cloud` | `moo-cloud.exe` |
+| 执行权限 | `chmod +x` | 不需要 |
+| 首次运行 | macOS 可能需要 `xattr -d com.apple.quarantine` | SmartScreen 确认 |
+| token 文件 | `~/.config/moo-fleet/mcp-token` | `%USERPROFILE%\.config\moo-fleet\mcp-token` |
+| 路径写法 | `/path/to/moo-cloud` | `C:/path/to/moo-cloud.exe`（生成配置时自动转义） |
+
+`agent-config` 会把**当前二进制自身的绝对路径**写进客户端配置，所以在哪个平台运行就写哪个平台的路径，不需要手工改分隔符。
+
 ## 快速开始
+
+macOS / Linux：
 
 ```bash
 # 1. 存 token（只读一次，权限 600）
@@ -52,6 +76,20 @@ cd /path/to/workspace
 ./moo-cloud preflight --fetch       # 校验 + 拉异常队列（默认类型）
 ./moo-cloud preflight --fetch --types=todo \
   --out=moo-cloud-reports/$(date +%F)/todos        # 待办单独一条流
+```
+
+Windows（PowerShell）：
+
+```powershell
+# 1. 存 token
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.config\moo-fleet" | Out-Null
+Set-Content -NoNewline -Path "$env:USERPROFILE\.config\moo-fleet\mcp-token" -Value '<moo_mcp_...>'
+
+# 2. 在工作区根目录执行
+cd C:\path\to\workspace
+.\moo-cloud.exe preflight --offline
+.\moo-cloud.exe preflight --fetch
+.\moo-cloud.exe preflight --fetch --types=todo --out=moo-cloud-reports\todos
 ```
 
 输出默认在 `<工作区>/moo-cloud-reports/<日期>/`：
@@ -88,6 +126,7 @@ token 和云端地址由桥从本机读取（`~/.config/moo-fleet/mcp-token`）�
 | Claude / Cursor / 通用 | `./moo-cloud agent-config --target=json` | 手动粘贴到各自配置 |
 
 已有同名配置时默认不覆盖，更新时加 `--force`；`--home=<dir>` 可演练到临时目录。
+Windows 上命令换成 `.\moo-cloud.exe agent-config ...`，生成的 `command` 会带 `.exe` 与正确转义。
 写入的 `command` 是 **moo-cloud 自身的绝对路径**，所以移动二进制后要重新跑一次 `agent-config`。
 
 生成的 Codex 片段（只读工具带自动批准）：
