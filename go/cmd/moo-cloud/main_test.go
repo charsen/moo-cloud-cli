@@ -370,6 +370,56 @@ func TestLastSseData(t *testing.T) {
 	}
 }
 
+func TestFetchQueueRespectsTypePolicies(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+			Params struct {
+				Name      string         `json:"name"`
+				Arguments map[string]any `json:"arguments"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		reply := func(data any) {
+			text, _ := json.Marshal(data)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]any{"content": []map[string]any{{"type": "text", "text": string(text)}}, "isError": false},
+			})
+		}
+		switch req.Method {
+		case "tools/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]any{"tools": []map[string]string{{"name": "list_projects"}, {"name": "list_issues"}}},
+			})
+		case "tools/call":
+			if req.Params.Name == "list_projects" {
+				reply(map[string]any{"projects": []map[string]any{{
+					"slug":          "p1",
+					"type_policies": map[string]string{"runtime": "hold", "slow_query": "confirm"},
+				}}})
+
+				return
+			}
+			reply(map[string]any{"issues": []map[string]any{}, "has_more": false})
+		}
+	}))
+	defer srv.Close()
+
+	queue, err := fetchQueue(srv.URL, pfOptions{token: "t", limit: "5", types: "runtime,slow_query"}, []string{"p1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queue["p1"]["runtime"].(map[string]any)["skipped"] != "策略：保留不处理" {
+		t.Fatalf("hold 类型应跳过：%+v", queue["p1"]["runtime"])
+	}
+	if queue["p1"]["slow_query"].(map[string]any)["policy"] != "confirm" {
+		t.Fatalf("confirm 类型应标注 policy：%+v", queue["p1"]["slow_query"])
+	}
+}
+
 func TestFetchQueueEmptyTypes(t *testing.T) {
 	if _, err := fetchQueue("http://127.0.0.1:1", pfOptions{token: "t", types: ""}, []string{"p1"}); err == nil {
 		t.Fatal("空类型应报错")

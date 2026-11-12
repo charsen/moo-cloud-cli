@@ -571,6 +571,7 @@ func fetchQueue(cloud string, opts pfOptions, projects []string) (map[string]map
 	}
 	known := []string{}
 	handled := map[string][]string{}
+	policies := map[string]map[string]string{}
 	for _, item := range anySlice(knownResp["projects"]) {
 		m, ok := item.(map[string]any)
 		if !ok {
@@ -589,6 +590,15 @@ func fetchQueue(cloud string, opts pfOptions, projects []string) (map[string]map
 				}
 			}
 			handled[slug] = scope
+		}
+		if raw, ok := m["type_policies"].(map[string]any); ok {
+			mapped := map[string]string{}
+			for typ, v := range raw {
+				if policy, ok := v.(string); ok {
+					mapped[typ] = policy
+				}
+			}
+			policies[slug] = mapped
 		}
 	}
 
@@ -635,6 +645,22 @@ func fetchQueue(cloud string, opts pfOptions, projects []string) (map[string]map
 					continue
 				}
 
+				// 问题类策略：hold 完全不处理；confirm 仍拉取，但结果标注 policy，
+				// 由调度方修复后不自动 resolve。
+				policy := "auto"
+				if typ != "todo" {
+					if mapped, ok := policies[project]; ok {
+						if v, ok := mapped[typ]; ok && v != "" {
+							policy = v
+						}
+					}
+				}
+				if policy == "hold" {
+					result[typ] = map[string]any{"issues": []any{}, "count": 0, "skipped": "策略：保留不处理"}
+
+					continue
+				}
+
 				tool := "list_issues"
 				if typ == "todo" {
 					tool = "list_todos"
@@ -653,6 +679,7 @@ func fetchQueue(cloud string, opts pfOptions, projects []string) (map[string]map
 
 					continue
 				}
+				one["policy"] = policy
 				result[typ] = one
 			}
 
