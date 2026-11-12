@@ -44,3 +44,11 @@ CLI 更新源为 GitHub Release，访问失败时尝试 Gitee。附图功能还�
 - 六个平台的源码提交、架构和文件格式已核对；`SHA256SUMS` 已按本表生成。
 - macOS arm64 执行 `--version` 返回 `moo-cloud 0.1.3`；Go 链接器 ad-hoc 签名，未 Developer ID 签名或公证。macOS amd64 无签名；其他平台未执行额外签名或目标机启动验证。
 - 本次只发布下载产物；本机共享安装文件与已运行 MCP 进程没有自动替换。
+
+## 最近本地验收构建 · 2026-11-13（未发布）
+
+- 源码：`3ea02f433faf7d75dee53a271fb26b429840302c`，工作区干净，`vcs.modified=false`；沿用 `0.1.3`，没有递增版本号。
+- 命令：在 `go/` 执行 `CGO_ENABLED=0 go build -trimpath -ldflags='-s -w -X main.version=0.1.3' -o <本轮临时目录>/moo-cloud ./cmd/moo-cloud`，未覆盖 `dist/` 或本机共享安装文件。
+- 产物：临时目录内 `moo-cloud`，macOS arm64，6,878,274 字节；SHA-256 为 `3b65bcc1518fc7faf9469c33eaff5954727fbb5fded9495cc83939f7738c0002`。Go 1.27.4；`--version` 返回 `moo-cloud 0.1.3`，Go 链接器 ad-hoc 签名，未 Developer ID 签名或公证。
+- 本地隔离 cloud 的真实 HTTP 端点可发现全部 13 个云端工具；WorkBuddy 自带运行时连接本地 MCP 成功，但独立运行缺少桌面登录态，未完成业务调用。其进程虽返回 0，实际结果为 `error_during_execution`，不能判为通过。
+- WorkBuddy 桌面窗口自动化在重连阶段持续超时，其他应用窗口也同样超时；未完成桌面会话、评论、附图和状态流转验收。已恢复原 MCP 配置、停止本轮本地服务并移除临时明文凭据。恢复窗口连接后继续验收，不能用接口或模拟测试替代。
