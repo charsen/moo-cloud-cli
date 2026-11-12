@@ -178,6 +178,33 @@ WorkBuddy 常见问题：
 | 日志有 `stdio-connected` 但工具为空 | 手工验证桥（见下），多半是 token 缺失 |
 | 改了配置没变化 | 只关窗口不算重启，必须 `Cmd+Q` 完全退出 |
 
+### DeepSeek Harness（DSH）
+
+DSH 通过内置的 `@deepseek-ai/dsh-mcp-client` 插件加载 MCP，**不使用** `mcp.json`。
+在 `~/.dsh/profiles/desktop/cordis.patch.yml` 末尾追加一条：
+
+```yaml
+- id: mcp-moo-cloud
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: moo-cloud
+    transport: stdio
+    command: /path/to/moo-cloud
+    args: ['mcp-server']
+    toolCallTimeoutMs: 120000
+```
+
+把 `command` 换成二进制绝对路径（例如 `.../dist/moo-cloud-darwin-arm64`）。
+保存后插件会原地重载；没生效就重启 DSH。工具会以
+`mcp__moo-cloud__list_projects` 这种带命名空间的形式出现。
+
+注意：
+
+- DSH 会清掉 stdio 子进程里匹配 `KEY|PASSWORD|SECRET|TOKEN` 的环境变量；
+  桥默认从 `~/.config/moo-fleet/mcp-token` 读 token，不受影响
+- 如果一定要用环境变量传 token，显式写进 `config.env`，不要依赖继承
+- 第一次调用可能触发 DSH 的工具权限确认
+
 ### 手工验证桥
 
 ```bash
