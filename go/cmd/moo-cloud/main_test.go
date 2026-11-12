@@ -25,10 +25,10 @@ func TestParseTypes(t *testing.T) {
 
 func TestNormalizeRemote(t *testing.T) {
 	cases := map[string]string{
-		"git@gitee.com:charsen/x.git":       "gitee.com/charsen/x",
-		"https://gitee.com/charsen/x.git/":  "gitee.com/charsen/x",
-		"ssh://git@gitee.com/charsen/x.git": "gitee.com/charsen/x",
-		"https://GITEE.com/charsen/x":       "gitee.com/charsen/x",
+		"git@example.com:team/x.git":       "example.com/team/x",
+		"https://example.com/team/x.git/":  "example.com/team/x",
+		"ssh://git@example.com/team/x.git": "example.com/team/x",
+		"https://EXAMPLE.com/team/x":       "example.com/team/x",
 	}
 	for in, want := range cases {
 		if got := normalizeRemote(in); got != want {
