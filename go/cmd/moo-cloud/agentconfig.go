@@ -128,8 +128,14 @@ func emitCodex(home, exe string, write, force bool) int {
 		existing = stripCodexBlock(existing)
 	}
 
-	backupFile(file)
-	writeFile(file, strings.TrimRight(existing, "\n")+"\n\n"+block)
+	if err := backupFile(file); err != nil {
+		fmt.Fprintf(os.Stderr, "备份配置失败：%v\n", err)
+		return 1
+	}
+	if err := writeFile(file, strings.TrimRight(existing, "\n")+"\n\n"+block); err != nil {
+		fmt.Fprintf(os.Stderr, "写入配置失败：%v\n", err)
+		return 1
+	}
 	fmt.Fprintf(os.Stderr, "已写入 %s；重启 Codex 后生效\n", file)
 
 	return 0
@@ -146,7 +152,7 @@ func emitWorkbuddy(home string, entry map[string]any, write, force bool) int {
 	file := filepath.Join(home, ".workbuddy", "mcp.json")
 	root := map[string]json.RawMessage{}
 	if raw, err := os.ReadFile(file); err == nil {
-		if err := json.Unmarshal(raw, &root); err != nil {
+		if err := json.Unmarshal(raw, &root); err != nil || root == nil {
 			fmt.Fprintf(os.Stderr, "%s 不是合法 JSON，拒绝覆盖\n", file)
 
 			return 1
@@ -155,8 +161,9 @@ func emitWorkbuddy(home string, entry map[string]any, write, force bool) int {
 
 	servers := map[string]json.RawMessage{}
 	if raw, ok := root["mcpServers"]; ok {
-		if err := json.Unmarshal(raw, &servers); err != nil {
-			servers = map[string]json.RawMessage{}
+		if err := json.Unmarshal(raw, &servers); err != nil || servers == nil {
+			fmt.Fprintf(os.Stderr, "%s 的 mcpServers 必须是 JSON 对象，拒绝覆盖\n", file)
+			return 1
 		}
 	}
 	if _, exists := servers["moo-cloud"]; exists && !force {
@@ -170,9 +177,15 @@ func emitWorkbuddy(home string, entry map[string]any, write, force bool) int {
 	serversRaw, _ := json.Marshal(servers)
 	root["mcpServers"] = serversRaw
 
-	backupFile(file)
+	if err := backupFile(file); err != nil {
+		fmt.Fprintf(os.Stderr, "备份配置失败：%v\n", err)
+		return 1
+	}
 	raw, _ := json.MarshalIndent(root, "", "    ")
-	writeFile(file, string(raw)+"\n")
+	if err := writeFile(file, string(raw)+"\n"); err != nil {
+		fmt.Fprintf(os.Stderr, "写入配置失败：%v\n", err)
+		return 1
+	}
 	fmt.Fprintf(os.Stderr, "已写入 %s\n", file)
 	fmt.Fprintln(os.Stderr, "下一步：完全退出 WorkBuddy（Cmd+Q）→ 重开 → 在 MCP 面板启用 moo-cloud → 新建会话")
 
@@ -195,15 +208,15 @@ func stripCodexBlock(toml string) string {
 	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
-func backupFile(file string) {
-	if _, err := os.Stat(file); err != nil {
-		return
-	}
+func backupFile(file string) error {
 	raw, err := os.ReadFile(file)
-	if err != nil {
-		return
+	if os.IsNotExist(err) {
+		return nil
 	}
-	_ = os.WriteFile(file+".bak-"+time.Now().Format("20060102150405"), raw, 0o600)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(file+".bak-"+time.Now().Format("20060102150405.000000000"), raw, 0o600)
 }
 
 func tomlString(value string) string {

@@ -153,7 +153,16 @@ func mcpCall(cloud, token, tool string, args map[string]any) (map[string]any, er
 	return data, nil
 }
 
-func mcpTools(cloud, token string) ([]string, error) {
+// 工具定义同时用于兼容性探测：创建待办前必须确认服务器声明了 confirm_token，
+// 不能靠先调一次 create_todo 试探，否则旧服务器会立即写库。
+type mcpToolDefinition struct {
+	Name        string `json:"name"`
+	InputSchema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	} `json:"inputSchema"`
+}
+
+func mcpDefinitions(cloud, token string) ([]mcpToolDefinition, error) {
 	status, body, err := httpJSON(cloud+"/api/v1/mcp", map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": map[string]any{},
 	}, map[string]string{"Authorization": "Bearer " + token}, 20*time.Second)
@@ -163,22 +172,35 @@ func mcpTools(cloud, token string) ([]string, error) {
 	if status != http.StatusOK {
 		return nil, fmt.Errorf("tools/list 返回 HTTP %d", status)
 	}
-
 	var resp struct {
-		Result struct {
-			Tools []struct {
-				Name string `json:"name"`
-			} `json:"tools"`
+		Result *struct {
+			Tools []mcpToolDefinition `json:"tools"`
 		} `json:"result"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, err
 	}
-	names := make([]string, 0, len(resp.Result.Tools))
-	for _, t := range resp.Result.Tools {
-		names = append(names, t.Name)
+	if resp.Error != nil {
+		return nil, fmt.Errorf("tools/list 协议错误：%s", resp.Error.Message)
 	}
+	if resp.Result == nil || resp.Result.Tools == nil {
+		return nil, fmt.Errorf("tools/list 缺少工具清单")
+	}
+	return resp.Result.Tools, nil
+}
 
+func mcpTools(cloud, token string) ([]string, error) {
+	definitions, err := mcpDefinitions(cloud, token)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(definitions))
+	for _, tool := range definitions {
+		names = append(names, tool.Name)
+	}
 	return names, nil
 }
 

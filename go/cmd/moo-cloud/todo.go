@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -23,6 +24,7 @@ type todoOptions struct {
 	token       string
 	cloud       string
 	json        bool
+	yes         bool
 }
 
 func runTodo(args []string) int {
@@ -89,6 +91,7 @@ func printTodoHelp() {
   --token=...         覆盖 token
   --cloud=...         覆盖 cloud 地址
   --json              输出机器可读 JSON
+  --yes               跳过交互确认（仍会走两阶段确认令牌）
 
 例:
   moo-cloud todo add --project=colorfulhome --title="修复登录页报错"
@@ -104,10 +107,15 @@ func parseTodoOptions(args []string) (todoOptions, error) {
 			return opts, fmt.Errorf("不支持非选项参数：%s", arg)
 		}
 		key, value, hasValue := strings.Cut(arg[2:], "=")
-		if key == "json" {
-			opts.json = true
+		if key == "json" || key == "yes" {
+			enabled := true
 			if hasValue && value == "false" {
-				opts.json = false
+				enabled = false
+			}
+			if key == "json" {
+				opts.json = enabled
+			} else {
+				opts.yes = enabled
 			}
 			continue
 		}
@@ -183,6 +191,20 @@ func addTodo(opts todoOptions) (map[string]any, error) {
 		cloud = "https://c.mooeen.com"
 	}
 
+	definitions, err := mcpDefinitions(cloud, token)
+	if err != nil {
+		return nil, err
+	}
+	supportsConfirmation := false
+	for _, tool := range definitions {
+		if tool.Name == "create_todo" {
+			_, supportsConfirmation = tool.InputSchema.Properties["confirm_token"]
+		}
+	}
+	if !supportsConfirmation {
+		return nil, fmt.Errorf("云端未提供带项目确认的 create_todo，请先升级 cloud 或检查写权限")
+	}
+
 	title := strings.TrimSpace(opts.title)
 	description := strings.TrimSpace(opts.description)
 	source := map[string]any(nil)
@@ -248,12 +270,45 @@ func addTodo(opts todoOptions) (map[string]any, error) {
 		args["source"] = source
 	}
 
-	result, err := mcpCall(cloud, token, "create_todo", args)
+	preview, err := mcpCall(cloud, token, "create_todo", args)
 	if err != nil {
 		return nil, err
 	}
 
-	return result, nil
+	requires, _ := preview["requires_confirmation"].(bool)
+	if !requires {
+		return nil, fmt.Errorf("云端未启用项目确认（可能需要先升级 cloud）")
+	}
+
+	tokenValue, _ := preview["confirm_token"].(string)
+	if tokenValue == "" {
+		return nil, fmt.Errorf("云端要求确认项目，但没有返回 confirm_token")
+	}
+
+	project, _ := preview["project"].(map[string]any)
+	name, _ := project["name"].(string)
+	slug, _ := project["slug"].(string)
+
+	if !opts.yes {
+		info, statErr := os.Stdin.Stat()
+		if statErr != nil || info.Mode()&os.ModeCharDevice == 0 {
+			return nil, fmt.Errorf("需要确认项目「%s」（%s）：请在终端确认，或加 --yes", name, slug)
+		}
+
+		fmt.Fprintf(os.Stderr, "将写入项目「%s」（%s）\n", name, slug)
+		fmt.Fprintf(os.Stderr, "待办：%v\n", args["title"])
+		fmt.Fprint(os.Stderr, "确认？[y/N] ")
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		switch strings.ToLower(strings.TrimSpace(line)) {
+		case "y", "yes", "是":
+		default:
+			return nil, fmt.Errorf("已取消")
+		}
+	}
+
+	args["confirm_token"] = tokenValue
+
+	return mcpCall(cloud, token, "create_todo", args)
 }
 
 func splitIssueRef(ref string) (string, string, error) {

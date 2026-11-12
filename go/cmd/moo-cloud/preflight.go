@@ -49,6 +49,7 @@ type markerFile struct {
 	Role      string `json:"role"`
 	Root      string `json:"root"`
 	Product   string `json:"product"`
+	Project   string `json:"project"`
 	Platforms []string
 	Verify    []struct {
 		File     string `json:"file"`
@@ -194,16 +195,30 @@ func runPreflight(args []string) int {
 		"metrics":        metrics,
 	}
 
-	writeJSON(filepath.Join(outDir, "_preflight.json"), payload)
-	writeFile(filepath.Join(outDir, "_preflight.md"), renderMarkdown(payload["generated_at"].(string), mode, reports, hardFailures, queue))
+	writeFailed := false
+	saveJSON := func(path string, value any) {
+		if err := writeJSON(path, value); err != nil {
+			fmt.Fprintf(os.Stderr, "写入 %s 失败：%v\n", path, err)
+			writeFailed = true
+		}
+	}
+	saveText := func(path, value string) {
+		if err := writeFile(path, value); err != nil {
+			fmt.Fprintf(os.Stderr, "写入 %s 失败：%v\n", path, err)
+			writeFailed = true
+		}
+	}
+	saveJSON(filepath.Join(outDir, "_preflight.json"), payload)
+	saveText(filepath.Join(outDir, "_preflight.md"), renderMarkdown(payload["generated_at"].(string), mode, reports, hardFailures, queue))
 
 	if queue != nil {
-		writeJSON(filepath.Join(outDir, "_queue.json"), map[string]any{
+		saveJSON(filepath.Join(outDir, "_queue.json"), map[string]any{
 			"generated_at": time.Now().In(cst).Format(time.RFC3339),
 			"projects":     queue,
+			"error":        queueError,
 		})
 	} else if opts.fetch {
-		writeJSON(filepath.Join(outDir, "_queue.json"), map[string]any{
+		saveJSON(filepath.Join(outDir, "_queue.json"), map[string]any{
 			"generated_at": time.Now().In(cst).Format(time.RFC3339),
 			"error":        queueError,
 			"projects":     map[string]any{},
@@ -217,10 +232,14 @@ func runPreflight(args []string) int {
 			"metrics":      metrics,
 			"error":        queueError,
 		}
-		writeJSON(filepath.Join(outDir, "_metrics.json"), metricsPayload)
+		saveJSON(filepath.Join(outDir, "_metrics.json"), metricsPayload)
 		if opts.metricsLog != "" {
 			appendJSONLine(opts.metricsLog, metricsPayload)
 		}
+	}
+
+	if writeFailed {
+		return 1
 	}
 
 	if opts.json {
@@ -337,7 +356,7 @@ func inspectRepo(markerPath string, opts pfOptions) repoReport {
 	}
 
 	if data.Role == "app" {
-		return inspectAppRepo(markerPath, repoRoot, data, report)
+		return inspectAppRepo(markerPath, repoRoot, data, report, opts)
 	}
 
 	report.Role = strPtr("backend")
@@ -374,7 +393,7 @@ func inspectRepo(markerPath string, opts pfOptions) repoReport {
 	return report
 }
 
-func inspectAppRepo(markerPath, repoRoot string, data markerFile, report repoReport) repoReport {
+func inspectAppRepo(markerPath, repoRoot string, data markerFile, report repoReport, opts pfOptions) repoReport {
 	report.Role = strPtr("app")
 	report.AppRoot = strPtr(repoRoot)
 	report.Product = data.Product
@@ -409,6 +428,47 @@ func inspectAppRepo(markerPath, repoRoot string, data markerFile, report repoRep
 			report.Warnings = append(report.Warnings, fmt.Sprintf("指纹不匹配：%s 不含 %s", rule.File, rule.Contains))
 			report.HardFailures++
 		}
+	}
+
+	if strings.TrimSpace(data.Project) == "" {
+		report.Warnings = append(report.Warnings, "app marker 缺 project，不能确定云端项目")
+		report.HardFailures++
+		return report
+	}
+	if report.HardFailures > 0 {
+		return report
+	}
+	cloud := strings.TrimRight(opts.cloud, "/")
+	if cloud == "" {
+		cloud = "https://c.mooeen.com"
+	}
+	dep := deploymentReport{Project: data.Project, Cloud: cloud, Errors: []string{}, Warnings: []string{}}
+	if opts.offline {
+		dep.OK = true
+		dep.Warnings = append(dep.Warnings, "offline 模式：未反查软件与项目归属")
+	} else if opts.token == "" {
+		dep.Errors = append(dep.Errors, "App 身份校验需要账号级 token")
+	} else {
+		// App 没有 Host .env token，用账号级接口核对 product 确实属于指定项目。
+		result, err := mcpCall(cloud, opts.token, "list_apps", map[string]any{"project": data.Project})
+		if err != nil {
+			dep.Errors = append(dep.Errors, "软件身份校验失败："+err.Error())
+		} else {
+			for _, item := range anySlice(result["apps"]) {
+				app, ok := item.(map[string]any)
+				if ok && app["slug"] == data.Product {
+					dep.OK = true
+					break
+				}
+			}
+			if !dep.OK {
+				dep.Errors = append(dep.Errors, "云端项目下未找到软件："+data.Product)
+			}
+		}
+	}
+	report.Deployments = append(report.Deployments, dep)
+	if !dep.OK {
+		report.HardFailures++
 	}
 
 	return report
@@ -737,6 +797,22 @@ func fetchQueue(cloud string, opts pfOptions, projects []string) (map[string]map
 	wg.Wait()
 	metrics.DurationMs = time.Since(started).Milliseconds()
 
+	successes, failures := 0, 0
+	for _, project := range metrics.Projects {
+		for _, metric := range project.Types {
+			if metric.Error != "" {
+				failures++
+			} else if metric.Skipped == "" {
+				successes++
+			}
+		}
+	}
+	if failures > 0 && successes == 0 {
+		return queue, metrics, fmt.Errorf("所有尝试拉取的类型均失败（%d 项），详见队列与指标中的 error", failures)
+	}
+	if len(queue) == 0 {
+		return queue, metrics, fmt.Errorf("没有账号可访问的目标项目")
+	}
 	return queue, metrics, nil
 }
 
@@ -781,64 +857,85 @@ func fetchOneType(cloud, token, project, typ string, limit int) (map[string]any,
 
 func fetchIssuesPaged(cloud, token, project, typ string, limit int) (map[string]any, error) {
 	collected := []any{}
-	offset := 0
-	pages := 0
+	offset, pages := 0, 0
+	hasMore := false
 	var last map[string]any
 
-	for len(collected) < limit && pages < 10 {
+	// 每次读最多 50 行，持续越过调试数据，不能因固定页数而漏掉后面的生产问题。
+	// 返回的 next_offset 指向实际消费位置；页内达到条数上限时不能跳过余下记录。
+	for len(collected) < limit {
 		result, err := mcpCall(cloud, token, "list_issues", map[string]any{
-			"project": project, "type": typ, "limit": limit, "offset": offset,
+			"project": project, "type": typ, "limit": 50, "offset": offset,
 		})
 		if err != nil {
 			return nil, err
 		}
 		last = result
 		rows := anySlice(result["issues"])
-		collected = append(collected, filterIssues(typ, rows)...)
+		serverHasMore, _ := result["has_more"].(bool)
 		pages++
-
-		hasMore, _ := result["has_more"].(bool)
-		if !hasMore || len(rows) == 0 {
+		if len(rows) == 0 {
+			if serverHasMore {
+				return nil, fmt.Errorf("分页响应为空却声明还有数据，无法继续拉取")
+			}
+			hasMore = false
 			break
 		}
-		offset += len(rows)
+
+		consumed := 0
+		for _, row := range rows {
+			consumed++
+			if includeIssue(typ, row) {
+				collected = append(collected, row)
+			}
+			if len(collected) == limit {
+				break
+			}
+		}
+		nextOffset := offset + consumed
+		hasMore = consumed < len(rows) || serverHasMore
+		if consumed == len(rows) && serverHasMore {
+			// 旧服务端可省略 next_offset；新服务端给出时必须有效且向前，避免空转。
+			if raw, exists := result["next_offset"]; exists {
+				value, ok := raw.(float64)
+				if !ok || value != float64(int(value)) || value < float64(nextOffset) {
+					return nil, fmt.Errorf("服务端返回无效的 next_offset，无法继续拉取")
+				}
+				nextOffset = int(value)
+			}
+		}
+		offset = nextOffset
+		if !hasMore {
+			break
+		}
 	}
 
 	if last == nil {
 		last = map[string]any{}
 	}
-	if len(collected) > limit {
-		collected = collected[:limit]
-	}
 	last["issues"] = collected
 	last["count"] = len(collected)
-	last["has_more"] = false
+	last["offset"] = 0
+	last["has_more"] = hasMore
+	last["next_offset"] = nil
+	if hasMore {
+		last["next_offset"] = offset
+	}
 	last["pages"] = pages
-
 	return last, nil
 }
 
-func filterIssues(typ string, rows []any) []any {
-	out := make([]any, 0, len(rows))
-	for _, row := range rows {
-		m, ok := row.(map[string]any)
-		if !ok {
-			out = append(out, row)
-
-			continue
-		}
-		env, _ := m["env"].(string)
-		env = strings.ToLower(env)
-		if typ == "frontend_error" && strings.HasPrefix(env, "dev") {
-			continue
-		}
-		if typ == "app_error" && (env == "debug" || env == "verify") {
-			continue
-		}
-		out = append(out, row)
+func includeIssue(typ string, row any) bool {
+	m, ok := row.(map[string]any)
+	if !ok {
+		return true
 	}
-
-	return out
+	env, _ := m["env"].(string)
+	env = strings.ToLower(env)
+	if typ == "frontend_error" && strings.HasPrefix(env, "dev") {
+		return false
+	}
+	return typ != "app_error" || (env != "debug" && env != "verify")
 }
 
 func parseTypes(raw string) []string {
@@ -974,17 +1071,40 @@ func normalizeRemote(remote string) string {
 	return strings.ToLower(strings.TrimRight(r, "/"))
 }
 
-func writeJSON(path string, v any) {
+func writeJSON(path string, v any) error {
 	raw, err := json.MarshalIndent(v, "", "    ")
 	if err != nil {
-		return
+		return err
 	}
-	writeFile(path, string(raw)+"\n")
+	return writeFile(path, string(raw)+"\n")
 }
 
-func writeFile(path, content string) {
-	_ = os.MkdirAll(filepath.Dir(path), 0o775)
-	_ = os.WriteFile(path, []byte(content), 0o644)
+// 同目录临时文件写完再替换，避免磁盘写失败时把旧配置/报告截断。
+func writeFile(path, content string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o775); err != nil {
+		return err
+	}
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	}
+	file, err := os.CreateTemp(filepath.Dir(path), ".moo-cloud-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	if err := file.Chmod(mode); err != nil {
+		file.Close()
+		return err
+	}
+	if _, err := file.WriteString(content); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(file.Name(), path)
 }
 
 func strPtr(v string) *string { return &v }

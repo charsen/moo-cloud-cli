@@ -246,6 +246,8 @@ moo-cloud preflight --fetch --types=todo --out=moo-cloud-reports/todos
 
 `verify` 是包名指纹：文件存在且包含指定字符串才算对上，防止认错仓库。
 
+App marker 的 `project` 与 `product` 都必填。在线检查使用账号级 Token 调用 `list_apps`，确认软件属于该项目；通过后可独立拉取队列。`--offline` 仅检查本地指纹，不验证云端归属。
+
 ### 7.4 token、范围、策略
 
 - **token**：账号级，一枚覆盖你所有项目；`moo_mcp_` 开头
@@ -374,21 +376,25 @@ moo-cloud todo add --project=colorfulhome --title="修复登录页报错"
 # 从一条问题生成标题/描述，并带上来源
 moo-cloud todo add --project=colorfulhome --from-issue=runtime:abcdef123456
 
-# 指定类型/优先级/指派给项目成员，输出 JSON
+# 指定类型/优先级/指派给项目成员，输出 JSON（自动化需 --yes）
 moo-cloud todo add --project=colorfulhome --title="补充回归用例" \
-  --category=task --priority=high --assignee=dev@example.com --json
+  --category=task --priority=high --assignee=dev@example.com --yes --json
 ```
 
 规则：
 
+- CLI 先用只读 `tools/list` 确认 cloud 支持 `confirm_token`；旧服务端或没有写权限时直接拒绝，不尝试创建
+- 首次创建调用只返回项目确认信息，**不写库**；CLI 会显示项目名并询问 `y/N`
+- 非交互环境（脚本/AI）必须加 `--yes`，否则直接报错
 - 需要 `mcp:write`
 - 同项目、同标题且未完成（`open` / `in_progress`）时复用已有待办，返回 `deduped: true`
 - 新待办默认 `ai_policy=auto`；`--assignee` 可填 `me`（默认）或项目成员邮箱
-- 免费项目待办配额满时返回错误，不会淘汰已有待办
+- 免费项目待办配额满时拒绝新建，不会淘汰已有待办；相同标题的未完成待办仍可复用
 - `--from-issue` 支持 `runtime` / `slow_query` / `frontend_error` / `app_error`
 
 ## 10. 输出与可观测性
 
+- 前端与 App 错误拉取会持续越过被过滤的开发/调试数据，直到达到 `--limit` 或读完；队列中的 `has_more / next_offset` 保留原始记录的续取位置，不能按过滤后的条数计算偏移量。
 - `_metrics.json`：本次运行总耗时、每项目/类型的耗时与条数、跳过/错误
 - `--metrics-log=<file>`：每次运行追加一行 JSON，用于趋势
 - `mcp-server --log=<file>`：每次 MCP 调用一行（method/tool/ok/duration/error）
@@ -412,7 +418,7 @@ moo-cloud todo add --project=colorfulhome --title="补充回归用例" \
 | `--json` | 输出机器可读的 preflight 结果 |
 | `--metrics-log=<file>` | 追加指标日志 |
 
-退出码：`0` 正常（含单仓跳过）；`1` 无法继续（缺 token、没有通过校验的仓库、整体拉取失败）。
+退出码：`0` 正常（含单仓跳过）；`1` 无法继续（缺 token、没有通过校验的仓库、整体拉取失败或必要报告落盘失败）。部分类型成功时保留结果并逐项记录 `error`；范围/策略正常跳过不算拉取失败。客户端配置写入或备份失败同样返回非零，不会报告写入成功。
 
 ---
 

@@ -118,12 +118,35 @@ func handleMcpLine(endpoint, token, line string, writer *bufio.Writer) (bool, st
 
 		return false, "云端返回非 JSON"
 	}
+	var version string
+	_ = json.Unmarshal(response["jsonrpc"], &version)
+	_, hasResult := response["result"]
+	rawError, hasError := response["error"]
+	var rpcErr struct {
+		Code    *int    `json:"code"`
+		Message *string `json:"message"`
+	}
+	validError := !hasError || (json.Unmarshal(rawError, &rpcErr) == nil && rpcErr.Code != nil && rpcErr.Message != nil)
+	if version != "2.0" || hasResult == hasError || !validError {
+		writeRaw(writer, map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(rawID),
+			"error": map[string]any{"code": -32603, "message": "云端返回非法 JSON-RPC"}})
+		return false, "云端返回非法 JSON-RPC"
+	}
 	if existing, ok := response["id"]; !ok || string(existing) == "null" {
 		response["id"] = json.RawMessage(rawID)
 	}
 
 	writeRaw(writer, response)
-
+	if hasError {
+		return false, "云端返回 JSON-RPC 错误"
+	}
+	var toolResult struct {
+		IsError bool `json:"isError"`
+	}
+	_ = json.Unmarshal(response["result"], &toolResult)
+	if toolResult.IsError {
+		return false, "云端工具执行失败"
+	}
 	return true, ""
 }
 
@@ -169,6 +192,11 @@ func forwardMcp(endpoint, token, body string) ([]byte, error) {
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
+	}
+
+	// 中间件的 401/403/429 是 HTTP 错误体，不能直接当 JSON-RPC 转发。
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("云端 MCP 返回 HTTP %d", resp.StatusCode)
 	}
 
 	// 云端当前返回 JSON；如果以后改成 SSE（text/event-stream），取最后一条 data。

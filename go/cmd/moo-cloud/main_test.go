@@ -56,25 +56,20 @@ func TestEnvValue(t *testing.T) {
 	}
 }
 
-func TestFilterIssues(t *testing.T) {
-	rows := []any{
-		map[string]any{"env": "dev-huijia"},
-		map[string]any{"env": "prod-huijia"},
-		map[string]any{"env": ""},
+func TestIncludeIssue(t *testing.T) {
+	cases := []struct {
+		typ, env string
+		want     bool
+	}{
+		{"frontend_error", "dev-huijia", false}, {"frontend_error", "DEV", false},
+		{"frontend_error", "prod-huijia", true}, {"frontend_error", "", true},
+		{"app_error", "debug", false}, {"app_error", "verify", false},
+		{"app_error", "release", true}, {"runtime", "dev-huijia", true},
 	}
-	if got := len(filterIssues("frontend_error", rows)); got != 2 {
-		t.Fatalf("frontend 应保留 2 条，得到 %d", got)
-	}
-	app := []any{
-		map[string]any{"env": "debug"},
-		map[string]any{"env": "verify"},
-		map[string]any{"env": "release"},
-	}
-	if got := len(filterIssues("app_error", app)); got != 1 {
-		t.Fatalf("app 应保留 1 条，得到 %d", got)
-	}
-	if got := len(filterIssues("runtime", rows)); got != 3 {
-		t.Fatalf("其他类型不筛，得到 %d", got)
+	for _, item := range cases {
+		if got := includeIssue(item.typ, map[string]any{"env": item.env}); got != item.want {
+			t.Fatalf("type=%s env=%s got=%v want=%v", item.typ, item.env, got, item.want)
+		}
 	}
 }
 
@@ -130,7 +125,7 @@ func TestInspectDeploymentOffline(t *testing.T) {
 func TestInspectAppRepoVerify(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "app.txt"), []byte("com.example.app"), 0o644)
-	_ = os.WriteFile(filepath.Join(dir, ".moo-cloud.json"), []byte(`{"role":"app","product":"p","verify":[{"file":"app.txt","contains":"com.example.app"}]}`), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, ".moo-cloud.json"), []byte(`{"role":"app","product":"p","project":"p1","verify":[{"file":"app.txt","contains":"com.example.app"}]}`), 0o644)
 
 	if code, _ := gitCmd(dir, "init"); code != 0 {
 		t.Fatal("git init 失败")
@@ -451,14 +446,28 @@ func TestAddTodoSendsCreateTool(t *testing.T) {
 			} `json:"params"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-
-		if req.Method == "tools/call" && req.Params.Name == "create_todo" {
-			got = req.Params.Arguments
+		if req.Method == "tools/list" {
+			replyTodoDefinitions(w, req.ID)
+			return
 		}
-		text, _ := json.Marshal(map[string]any{
-			"project": "p1", "deduped": false,
-			"todo": map[string]any{"id": "01ABC", "title": req.Params.Arguments["title"], "status": "open"},
-		})
+
+		var payload any
+		if req.Method == "tools/call" && req.Params.Name == "create_todo" {
+			if _, ok := req.Params.Arguments["confirm_token"]; !ok {
+				payload = map[string]any{
+					"requires_confirmation": true,
+					"project":               map[string]any{"slug": "p1", "name": "项目一"},
+					"confirm_token":         "tok",
+				}
+			} else {
+				got = req.Params.Arguments
+				payload = map[string]any{
+					"project": "p1", "deduped": false,
+					"todo": map[string]any{"id": "01ABC", "title": req.Params.Arguments["title"], "status": "open"},
+				}
+			}
+		}
+		text, _ := json.Marshal(payload)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"jsonrpc": "2.0", "id": req.ID,
 			"result": map[string]any{
@@ -471,7 +480,7 @@ func TestAddTodoSendsCreateTool(t *testing.T) {
 
 	result, err := addTodo(todoOptions{
 		project: "p1", title: "修复登录页", token: "t", cloud: srv.URL,
-		assignee: "member@example.com",
+		assignee: "member@example.com", yes: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -499,6 +508,10 @@ func TestAddTodoFromIssueDerivesTitleAndSource(t *testing.T) {
 			} `json:"params"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Method == "tools/list" {
+			replyTodoDefinitions(w, req.ID)
+			return
+		}
 
 		var data any
 		switch req.Params.Name {
@@ -511,10 +524,18 @@ func TestAddTodoFromIssueDerivesTitleAndSource(t *testing.T) {
 				},
 			}
 		case "create_todo":
-			createArgs = req.Params.Arguments
-			data = map[string]any{
-				"project": "p1", "deduped": true,
-				"todo": map[string]any{"id": "01XYZ", "title": createArgs["title"], "status": "open"},
+			if _, ok := req.Params.Arguments["confirm_token"]; !ok {
+				data = map[string]any{
+					"requires_confirmation": true,
+					"project":               map[string]any{"slug": "p1", "name": "项目一"},
+					"confirm_token":         "tok",
+				}
+			} else {
+				createArgs = req.Params.Arguments
+				data = map[string]any{
+					"project": "p1", "deduped": true,
+					"todo": map[string]any{"id": "01XYZ", "title": createArgs["title"], "status": "open"},
+				}
 			}
 		}
 		text, _ := json.Marshal(data)
@@ -529,7 +550,7 @@ func TestAddTodoFromIssueDerivesTitleAndSource(t *testing.T) {
 	defer srv.Close()
 
 	if _, err := addTodo(todoOptions{
-		project: "p1", fromIssue: "runtime:abcdef123456", token: "t", cloud: srv.URL,
+		project: "p1", fromIssue: "runtime:abcdef123456", token: "t", cloud: srv.URL, yes: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -558,5 +579,68 @@ func TestParseTodoOptionsRejectsBadInput(t *testing.T) {
 		if _, err := parseTodoOptions(args); err == nil {
 			t.Fatalf("应报错：%v", args)
 		}
+	}
+}
+
+func TestAddTodoTwoPhaseConfirmation(t *testing.T) {
+	calls := 0
+	var confirmed map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var req struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+			Params struct {
+				Name      string         `json:"name"`
+				Arguments map[string]any `json:"arguments"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Method == "tools/list" {
+			replyTodoDefinitions(w, req.ID)
+			return
+		}
+
+		var data any
+		if _, ok := req.Params.Arguments["confirm_token"]; !ok {
+			data = map[string]any{
+				"requires_confirmation": true,
+				"project":               map[string]any{"slug": "p1", "name": "项目一"},
+				"confirm_token":         "tok-123",
+			}
+		} else {
+			confirmed = req.Params.Arguments
+			data = map[string]any{
+				"project": "p1", "deduped": false,
+				"todo": map[string]any{"id": "01ABC", "title": "确认后创建", "status": "open"},
+			}
+		}
+
+		text, _ := json.Marshal(data)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0", "id": req.ID,
+			"result": map[string]any{
+				"content": []map[string]any{{"type": "text", "text": string(text)}},
+				"isError": false,
+			},
+		})
+	}))
+	defer srv.Close()
+
+	result, err := addTodo(todoOptions{
+		project: "p1", title: "确认后创建", token: "t", cloud: srv.URL, yes: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 {
+		t.Fatalf("应先探测能力再调用两次 MCP，实际 %d", calls)
+	}
+	if confirmed["confirm_token"] != "tok-123" {
+		t.Fatalf("确认令牌未回传：%+v", confirmed)
+	}
+	if result["deduped"] != false {
+		t.Fatalf("确认后应创建：%+v", result)
 	}
 }
