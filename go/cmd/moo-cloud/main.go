@@ -47,7 +47,7 @@ func printHelp() {
   moo-cloud todo add [选项]         记录一条云端待办
 
 preflight:
-  --root=<dir>      工作区根目录（默认当前目录）
+  --root=<dir>      当前仓库或工作区目录（默认当前目录）
   --date=<Y-m-d>    输出日期目录（默认上海当天）
   --out=<dir>       输出目录（默认 <root>/moo-cloud-reports/<date>）
   --offline         跳过云端身份校验

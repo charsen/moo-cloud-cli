@@ -95,6 +95,8 @@ func runPreflight(args []string) int {
   --root=<dir>   --date=<Y-m-d>   --out=<dir>
   --offline      --fetch          --types=<list>
   --token=       --cloud=         --limit=<n>   --concurrency=<n>   --json   --metrics-log=<file>
+
+识别当前目录及下两层的 .moo-cloud.json；可在软件仓库内直接运行。
 `)
 
 		return 0
@@ -254,7 +256,7 @@ func runPreflight(args []string) int {
 			len(reports), hardFailures, fatal, mode, suffix, outDir)
 	}
 
-	if fatal > 0 {
+	if fatal > 0 || hardFailures > 0 {
 		return 1
 	}
 
@@ -322,11 +324,35 @@ func parsePfOptions(args []string) pfOptions {
 }
 
 func findMarkers(root string) []string {
-	patterns := []string{filepath.Join(root, "*", ".moo-cloud.json"), filepath.Join(root, "*", "*", ".moo-cloud.json")}
 	markers := []string{}
-	for _, pattern := range patterns {
-		matches, _ := filepath.Glob(pattern)
-		markers = append(markers, matches...)
+	directories := []string{root}
+	seen := map[string]bool{}
+	// 同时支持仓库内直接运行与既有的两层工作区扫描；固定深度避免递归进入依赖树。
+	// 按真实目录去重，工作区里指向同一仓库的符号链接不会重复拉取。
+	for depth := 0; depth <= 2; depth++ {
+		next := []string{}
+		for _, directory := range directories {
+			canonical := realpath(directory)
+			if seen[canonical] {
+				continue
+			}
+			seen[canonical] = true
+			marker := filepath.Join(directory, ".moo-cloud.json")
+			if info, err := os.Stat(marker); err == nil && !info.IsDir() {
+				markers = append(markers, marker)
+			}
+			if depth == 2 {
+				continue
+			}
+			entries, _ := os.ReadDir(directory)
+			for _, entry := range entries {
+				path := filepath.Join(directory, entry.Name())
+				if info, err := os.Stat(path); err == nil && info.IsDir() {
+					next = append(next, path)
+				}
+			}
+		}
+		directories = next
 	}
 	sortStrings(markers)
 
@@ -342,14 +368,15 @@ func inspectRepo(markerPath string, opts pfOptions) repoReport {
 
 	raw, err := os.ReadFile(markerPath)
 	if err != nil {
-		report.Warnings = append(report.Warnings, ".moo-cloud.json 读取失败")
+		report.Warnings = append(report.Warnings, ".moo-cloud.json 读取失败，请检查文件路径与读取权限")
 		report.HardFailures++
 
 		return report
 	}
-	var data markerFile
-	if err := json.Unmarshal(raw, &data); err != nil {
-		report.Warnings = append(report.Warnings, ".moo-cloud.json 解析失败或缺 deployments")
+	data, warnings, err := decodeMarker(raw)
+	report.Warnings = append(report.Warnings, warnings...)
+	if err != nil {
+		report.Warnings = append(report.Warnings, err.Error())
 		report.HardFailures++
 
 		return report
@@ -361,7 +388,7 @@ func inspectRepo(markerPath string, opts pfOptions) repoReport {
 
 	report.Role = strPtr("backend")
 	if len(data.Deployments) == 0 {
-		report.Warnings = append(report.Warnings, ".moo-cloud.json 解析失败或缺 deployments")
+		report.Warnings = append(report.Warnings, "后端配置缺 deployments：请填写 project 与 env_file；软件仓库应设置 role=app")
 		report.HardFailures++
 
 		return report
@@ -415,17 +442,40 @@ func inspectAppRepo(markerPath, repoRoot string, data markerFile, report repoRep
 		report.Warnings = append(report.Warnings, "app marker 没有 verify，无法校验包名指纹")
 		report.HardFailures++
 	}
-	for _, rule := range data.Verify {
+	for index, rule := range data.Verify {
+		field := fmt.Sprintf("verify[%d]", index)
+		if strings.TrimSpace(rule.File) == "" {
+			report.Warnings = append(report.Warnings, field+".file 不能为空，请填写仓库内的相对文件路径")
+			report.HardFailures++
+			continue
+		}
+		if rule.Contains == "" {
+			report.Warnings = append(report.Warnings, field+".contains 不能为空，请填写文件应包含的包名或标识")
+			report.HardFailures++
+			continue
+		}
+		clean := filepath.Clean(rule.File)
+		if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			report.Warnings = append(report.Warnings, field+".file 必须是仓库内的相对文件路径")
+			report.HardFailures++
+			continue
+		}
 		file := filepath.Join(repoRoot, rule.File)
+		info, statErr := os.Stat(file)
+		if statErr != nil || info.IsDir() {
+			report.Warnings = append(report.Warnings, fmt.Sprintf("%s.file 无法找到可读文件：%s", field, rule.File))
+			report.HardFailures++
+			continue
+		}
 		raw, err := os.ReadFile(file)
-		if rule.Contains == "" || err != nil {
-			report.Warnings = append(report.Warnings, "指纹文件不存在："+rule.File)
+		if err != nil {
+			report.Warnings = append(report.Warnings, field+".file 读取失败，请检查文件权限："+rule.File)
 			report.HardFailures++
 
 			continue
 		}
 		if !strings.Contains(string(raw), rule.Contains) {
-			report.Warnings = append(report.Warnings, fmt.Sprintf("指纹不匹配：%s 不含 %s", rule.File, rule.Contains))
+			report.Warnings = append(report.Warnings, fmt.Sprintf("%s.contains 指纹不匹配：%s 不含指定标识", field, rule.File))
 			report.HardFailures++
 		}
 	}

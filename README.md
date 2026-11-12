@@ -19,7 +19,7 @@
 1. 从 [GitHub Releases](https://github.com/charsen/moo-cloud-cli/releases/latest) 或 [Gitee Releases](https://gitee.com/charsen/moo-cloud-cli/releases) 下载对应平台的文件；
 2. 改名为 `moo-cloud`（Windows 为 `moo-cloud.exe`），加执行权限；
 3. 把账号 token 存到 `~/.config/moo-fleet/mcp-token`；
-4. 在代码工作区执行 `moo-cloud preflight --offline`。
+4. 在软件仓库或代码工作区执行 `moo-cloud preflight --offline`。
 
 下面按步骤展开。
 
@@ -151,10 +151,10 @@ Set-Content -NoNewline -Encoding ascii `
 
 ## 5. 第一次运行
 
-先进入你的代码工作区（也就是放着若干仓库的目录），然后：
+可以直接进入含 `.moo-cloud.json` 的软件仓库，也可以进入放着若干仓库的工作区，然后：
 
 ```bash
-cd /path/to/workspace
+cd /path/to/software-repo
 
 # 1) 只做本地与身份校验，不拉取
 moo-cloud preflight --offline
@@ -166,7 +166,9 @@ moo-cloud preflight --fetch
 moo-cloud preflight --fetch --types=todo --out=moo-cloud-reports/todos
 ```
 
-成功后会在 `<工作区>/moo-cloud-reports/<日期>/` 生成：
+也可不切换目录，执行 `moo-cloud preflight --root=/path/to/workspace --offline` 批量检查工作区。扫描范围是指定目录本身、下一层和下两层目录；不会向上寻找配置，也不会无限递归。指向同一实际目录的符号链接只检查一次。
+
+默认会在 `<root>/moo-cloud-reports/<日期>/` 生成：
 
 | 文件 | 用途 |
 |---|---|
@@ -179,7 +181,13 @@ moo-cloud preflight --fetch --types=todo --out=moo-cloud-reports/todos
 
 ### 如果报「未找到任何 .moo-cloud.json」
 
-说明你的仓库还没登记云端身份。每个要纳管的仓库根目录需要放一个 `.moo-cloud.json`，见第 7 节。
+先确认当前目录或 `--root` 是否正确。扫描包含该目录本身及下两层，每个要纳管的仓库根目录需要放一个 `.moo-cloud.json`，见第 7 节。
+
+### 配置错误怎么处理
+
+报告会指出 JSON 格式错误的位置、类型不正确的字段、无效平台，或 `verify[0].file` / `verify[0].contains` 等具体指纹项。先检查字段拼写，再核对文件路径和包名；错误信息不回显指纹内容。
+
+未识别字段只警告，不会单独阻止预检；缺少必需资料、字段值无效或指纹校验失败会记为硬失败，并返回非零退出码。已发现配置的校验失败仍会写入报告，并继续检查其余仓库；未找到配置或命令参数不合法时直接退出。现有配置不增加必填项，`platforms` 仍可省略。
 
 ### 如果报「app root 不存在或缺 artisan」
 
@@ -210,7 +218,7 @@ cloud 项目用于协作和数据隔离，一个项目可包含多个软件；�
 
 `.moo-cloud.json` 就是这张对照表，放在**仓库根目录**，供 `preflight` 预检使用。MCP 连接由账号 Token 和客户端服务器配置建立；`mcp-server` 不读取此文件，文件也不改变账号权限或自动限定工具调用的项目。
 
-预检命令的 `--root` 指向包含这些仓库的工作区目录，例如 `moo-cloud preflight --root=/path/to/workspace --offline`；当前扫描其下一层和下两层仓库。这个命令参数与后端 marker 内的 `root` 用途不同。
+预检命令的 `--root` 可指向当前仓库或包含多个仓库的工作区，例如 `moo-cloud preflight --root=/path/to/workspace --offline`；扫描该目录本身及下两层目录。不传 `--root` 则使用当前目录，可在软件仓库内直接运行。这个命令参数与后端 marker 内的 `root` 用途不同。
 
 ### 7.2 后端仓库 marker
 
@@ -468,7 +476,7 @@ MCP 连接初始化时自动检查发布版本，成功结果缓存 24 小时。
 
 | 参数 | 说明 |
 |---|---|
-| `--root=<dir>` | 工作区根目录，默认当前目录 |
+| `--root=<dir>` | 当前仓库或工作区目录，默认当前目录；扫描本身及下两层 |
 | `--date=YYYY-MM-DD` | 输出日期目录，默认上海当天 |
 | `--out=<dir>` | 输出目录 |
 | `--offline` | 跳过云端身份校验 |
@@ -491,7 +499,7 @@ MCP 连接初始化时自动检查发布版本，成功结果缓存 24 小时。
 没放进 PATH。用绝对路径执行，或把所在目录加入 PATH。
 
 **Q：`未找到任何 .moo-cloud.json`**
-工作区里没有 marker。确认 `--root` 指向的目录下有仓库，并按第 7 节加 marker。
+确认当前目录或 `--root` 本身及下两层内存在 marker，并按第 7 节配置；更深的仓库请直接指定对应目录。
 
 **Q：`app root 不存在或缺 artisan`**
 marker 的 `root` 写错了；Laravel 在子目录时写子目录名，否则写 `.`。
