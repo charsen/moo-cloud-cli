@@ -287,9 +287,7 @@ func parsePfOptions(args []string) (pfOptions, error) {
 
 	for _, arg := range args {
 		if !strings.HasPrefix(arg, "--") {
-			fmt.Fprintf(os.Stderr, "忽略非选项参数：%s\n", arg)
-
-			continue
+			return opts, fmt.Errorf("请使用 --选项 或 --选项=值")
 		}
 		key, value, hasValue := strings.Cut(arg[2:], "=")
 		if key == "offline" || key == "fetch" || key == "json" {
@@ -310,14 +308,10 @@ func parsePfOptions(args []string) (pfOptions, error) {
 		}
 		target, ok := known[key]
 		if !ok {
-			fmt.Fprintf(os.Stderr, "未知参数：--%s\n", key)
-
-			continue
+			return opts, fmt.Errorf("未知参数 --%s", key)
 		}
-		if !hasValue {
-			fmt.Fprintf(os.Stderr, "参数 --%s 缺少值，已忽略（保持默认）\n", key)
-
-			continue
+		if !hasValue || strings.TrimSpace(value) == "" {
+			return opts, fmt.Errorf("--%s 需要非空值，请使用 --%s=值", key, key)
 		}
 		*target = value
 	}
@@ -680,6 +674,10 @@ func resolveFetchCloud(opts pfOptions, reports []repoReport) (string, error) {
 	clouds := []string{}
 	for _, report := range reports {
 		for _, dep := range report.Deployments {
+			// 与 projectSet 保持同一准入条件，失败环境不能干扰已验证环境的目标选择。
+			if !dep.OK {
+				continue
+			}
 			cloud := strings.TrimRight(dep.Cloud, "/")
 			if cloud != "" && !contains(clouds, cloud) {
 				clouds = append(clouds, cloud)

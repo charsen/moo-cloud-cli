@@ -22,19 +22,23 @@ func runMcpServer(args []string) int {
 	token := ""
 	cloud := ""
 	logPath := ""
+	known := map[string]*string{"token": &token, "cloud": &cloud, "log": &logPath}
 	for _, arg := range args {
-		key, value, ok := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
+		if !strings.HasPrefix(arg, "--") {
+			fmt.Fprintln(os.Stderr, "mcp-server: 请使用 --选项=值")
+			return 1
+		}
+		key, value, hasValue := strings.Cut(arg[2:], "=")
+		target, ok := known[key]
 		if !ok {
-			continue
+			fmt.Fprintf(os.Stderr, "mcp-server: 未知参数 --%s\n", key)
+			return 1
 		}
-		switch key {
-		case "token":
-			token = value
-		case "cloud":
-			cloud = value
-		case "log":
-			logPath = value
+		if !hasValue || strings.TrimSpace(value) == "" {
+			fmt.Fprintf(os.Stderr, "mcp-server: --%s 需要非空值，请使用 --%s=值\n", key, key)
+			return 1
 		}
+		*target = value
 	}
 	if token == "" {
 		token = initialToken()

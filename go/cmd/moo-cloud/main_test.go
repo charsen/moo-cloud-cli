@@ -74,7 +74,7 @@ func TestIncludeIssue(t *testing.T) {
 }
 
 func TestParsePfOptions(t *testing.T) {
-	opts, err := parsePfOptions([]string{"--root=/tmp/x", "--fetch=false", "--offline", "--limit=9", "--root"})
+	opts, err := parsePfOptions([]string{"--root=/tmp/x", "--fetch=false", "--offline", "--limit=9"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,13 +94,13 @@ func TestParsePfOptions(t *testing.T) {
 
 func TestResolveFetchCloud(t *testing.T) {
 	reports := []repoReport{
-		{Deployments: []deploymentReport{{Cloud: "https://a.example"}}},
-		{Deployments: []deploymentReport{{Cloud: "https://b.example"}}},
+		{Deployments: []deploymentReport{{Cloud: "https://a.example", OK: true}}},
+		{Deployments: []deploymentReport{{Cloud: "https://b.example", OK: true}}},
 	}
 	if _, err := resolveFetchCloud(pfOptions{}, reports); err == nil {
 		t.Fatal("多云端应报错")
 	}
-	one := []repoReport{{Deployments: []deploymentReport{{Cloud: "https://a.example/"}}}}
+	one := []repoReport{{Deployments: []deploymentReport{{Cloud: "https://a.example/", OK: true}}}}
 	if cloud, err := resolveFetchCloud(pfOptions{}, one); err != nil || cloud != "https://a.example" {
 		t.Fatalf("cloud=%q err=%v", cloud, err)
 	}

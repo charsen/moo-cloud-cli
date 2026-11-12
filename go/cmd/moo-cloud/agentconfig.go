@@ -28,11 +28,21 @@ func runAgentConfig(args []string) int {
 	}{target: "codex"}
 
 	for _, arg := range args {
-		key, value, hasValue := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
+		if !strings.HasPrefix(arg, "--") {
+			fmt.Fprintln(os.Stderr, "参数错误：请使用 --选项 或 --选项=值")
+			return 1
+		}
+		key, value, hasValue := strings.Cut(arg[2:], "=")
 		switch key {
-		case "target":
-			if hasValue {
+		case "target", "home":
+			if !hasValue || strings.TrimSpace(value) == "" {
+				fmt.Fprintf(os.Stderr, "参数错误：--%s 需要非空值，请使用 --%s=值\n", key, key)
+				return 1
+			}
+			if key == "target" {
 				opts.target = value
+			} else {
+				opts.home = value
 			}
 		case "write", "force":
 			enabled, err := parseBoolFlag(key, value, hasValue)
@@ -45,10 +55,9 @@ func runAgentConfig(args []string) int {
 			} else {
 				opts.force = enabled
 			}
-		case "home":
-			if hasValue {
-				opts.home = value
-			}
+		default:
+			fmt.Fprintf(os.Stderr, "参数错误：未知参数 --%s\n", key)
+			return 1
 		}
 	}
 
@@ -56,7 +65,7 @@ func runAgentConfig(args []string) int {
 	if home == "" {
 		home, _ = os.UserHomeDir()
 	} else {
-		home = strings.TrimRight(home, "/")
+		home = filepath.Clean(home)
 	}
 
 	exe, err := os.Executable()
@@ -105,6 +114,32 @@ func codexBlock(exe string) string {
 	return b.String()
 }
 
+// 配置可能由 dotfiles 软链接管理。先解析真实文件，原子写入与备份均针对目标，保留链接。
+// 仅允许新建尚不存在的配置；断链或不可读文件必须报错，不能当成空配置覆盖。
+func readClientConfig(file string) (string, []byte, error) {
+	resolved, err := filepath.EvalSymlinks(file)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return file, nil, err
+		}
+		if _, statErr := os.Lstat(file); statErr == nil {
+			return file, nil, err
+		} else if !os.IsNotExist(statErr) {
+			return file, nil, statErr
+		}
+		return file, nil, nil
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return file, nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return file, nil, fmt.Errorf("配置必须是普通文件")
+	}
+	raw, err := os.ReadFile(resolved)
+	return resolved, raw, err
+}
+
 func emitCodex(home, exe string, write, force bool) int {
 	block := codexBlock(exe)
 	if !write {
@@ -113,8 +148,11 @@ func emitCodex(home, exe string, write, force bool) int {
 		return 0
 	}
 
-	file := filepath.Join(home, ".codex", "config.toml")
-	raw, _ := os.ReadFile(file)
+	file, raw, err := readClientConfig(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "读取配置失败：%v\n", err)
+		return 1
+	}
 	existing := string(raw)
 	if strings.Contains(existing, "[mcp_servers.moo_cloud]") {
 		if !force {
@@ -146,9 +184,13 @@ func emitWorkbuddy(home string, entry map[string]any, write, force bool) int {
 		return 0
 	}
 
-	file := filepath.Join(home, ".workbuddy", "mcp.json")
+	file, raw, err := readClientConfig(filepath.Join(home, ".workbuddy", "mcp.json"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "读取配置失败：%v\n", err)
+		return 1
+	}
 	root := map[string]json.RawMessage{}
-	if raw, err := os.ReadFile(file); err == nil {
+	if raw != nil {
 		if err := json.Unmarshal(raw, &root); err != nil || root == nil {
 			fmt.Fprintf(os.Stderr, "%s 不是合法 JSON，拒绝覆盖\n", file)
 
@@ -178,7 +220,7 @@ func emitWorkbuddy(home string, entry map[string]any, write, force bool) int {
 		fmt.Fprintf(os.Stderr, "备份配置失败：%v\n", err)
 		return 1
 	}
-	raw, _ := json.MarshalIndent(root, "", "    ")
+	raw, _ = json.MarshalIndent(root, "", "    ")
 	if err := writeFile(file, string(raw)+"\n"); err != nil {
 		fmt.Fprintf(os.Stderr, "写入配置失败：%v\n", err)
 		return 1
