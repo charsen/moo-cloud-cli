@@ -11,7 +11,7 @@ cd go
 make dist VERSION=<version>
 ```
 
-输出到根目录 `dist/`，覆盖六个平台二进制。逐一核对 `go version -m` 的版本注入、平台和架构，并生成 `SHA256SUMS`；本机平台执行 `--version`。其他平台只有构建和格式检查时，不声明已经启动验证。
+输出到根目录 `dist/`，覆盖六个平台二进制。构建命令显式注入 `VERSION`；逐一核对 `go version -m` 的源码、平台和架构，并生成 `SHA256SUMS`；本机平台执行 `--version`。其他平台只有构建和格式检查时，不声明已经启动验证。
 
 ## 发布
 
@@ -27,3 +27,20 @@ CLI 更新源为 GitHub Release，访问失败时尝试 Gitee。附图功能还�
 
 - CLI 定向测试 14 组通过，含 race 检查；本次功能对应 cloud 接口与媒体回归 39 项、273 个断言通过。
 - 本次没有执行真实 Agent 聊天附图上传，也没有部署 cloud；不能将源码发布视为线上附图功能已生效。
+
+## 最近构建 · 0.1.3（2026-11-12）
+
+源码提交：`c5bd97bb8b550270d74b54e2a723fd8294c26a07`（干净工作区，`vcs.modified=false`）；Go 1.27.4，`CGO_ENABLED=0`，`make dist VERSION=0.1.3`。发布标签 `0.1.3` 同时包含本次构建记录。
+
+| 文件（位于 `dist/`） | 字节大小 | SHA-256 |
+| --- | ---: | --- |
+| `moo-cloud-darwin-amd64` | 7427216 | `f40e808aa63ee3fa51ae98cf0f0002fe866aa5beefdd55aef205afd06afaca8f` |
+| `moo-cloud-darwin-arm64` | 6861570 | `45f8c19904d08aab40a333c215fd3f1acb935681c9cae6873515bff58f5e2b6b` |
+| `moo-cloud-linux-amd64` | 7282848 | `5c0538e91f4fe4db655086a14ed779ce626fef68663373f4102bc0bd063ffbbe` |
+| `moo-cloud-linux-arm64` | 6750368 | `0f3e02fddddb3131a4148d4aa6d82efa5e8cfc7fcbbb89039f0d5e3dc70a2dcf` |
+| `moo-cloud-windows-amd64.exe` | 7501312 | `1fddb5388ee9920846152920a45cd574b8843b12fd7381b442da7d7466a08669` |
+| `moo-cloud-windows-arm64.exe` | 6796800 | `7a1db32cd3daeda6eb37d80a0c1d9645d070f0958e505d007930a22b76b56e03` |
+
+- 六个平台的源码提交、架构和文件格式已核对；`SHA256SUMS` 已按本表生成。
+- macOS arm64 执行 `--version` 返回 `moo-cloud 0.1.3`；Go 链接器 ad-hoc 签名，未 Developer ID 签名或公证。macOS amd64 无签名；其他平台未执行额外签名或目标机启动验证。
+- 本次只发布下载产物；本机共享安装文件与已运行 MCP 进程没有自动替换。
