@@ -270,6 +270,20 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | ./m
 - 只影响 MCP（夜间自动或随时手动发起）；页面手动处理不受限制
 - 拉取按项目并发（最多 4 个）；429 / 5xx 自动重试两次
 
+## MCP 处理策略（问题类）
+
+个人级设置，默认全部「自动解决」；在「个人 Token」页 →「MCP 策略」里按类别选：
+
+| 策略 | 行为 |
+|---|---|
+| `auto`（默认） | 修复并验证通过后，允许 MCP 自动 resolve |
+| `confirm` | 可以分析、修复、提交分支，但 resolve 会返回 403，留人工确认 |
+| `hold` | 完全不处理：队列标 `skipped: 策略：保留不处理` |
+
+- 只影响问题类（runtime / slow_query / frontend_error / app_error）
+- 待办仍是逐条的 `ai_policy`（auto/confirm/hold）
+- 队列里 `confirm` 类型的结果会带 `"policy": "confirm"`，调度方据此不自动 resolve
+
 ## 常用参数
 
 | 参数 | 说明 |
