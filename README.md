@@ -393,9 +393,9 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | moo
 | `post_comment` | 发表文字评论（需 `mcp:write`，先取得用户同意） |
 | `create_todo` | 记录待办并附图（需 `mcp:write`） |
 | `resolve_issue` | 标记问题已解决（需 `mcp:write`） |
-| `update_todo_status` | 认领/完成待办（需 `mcp:write`） |
+| `update_todo_status` | 受理/完成待办并保存完成结果（需 `mcp:write`） |
 
-写操作会校验「处理范围 + 策略」：范围外或 `confirm/hold` 会返回 403。
+写操作校验项目权限、处理范围和策略：`auto` 待办可受理及完成，`confirm` 待办仅可受理，`hold` 不可处理；发表评论及解决异常仍需对应策略许可。客户端的写操作审批继续生效。
 
 使用本地 `mcp-server` 桥时，还提供两个本机工具（不发送到 cloud）：
 
@@ -454,7 +454,31 @@ Agent 通过本地 MCP 桥创建待办时，用 `image_paths` 传入截图的**�
 
 聊天附件不会自动进入工具参数。Agent 应把用户附图一起传入；如果客户端未提供可读的原图文件，应明确说明图片尚未上传。需要同时使用支持附图的 cloud 和 CLI，更新后重新连接 MCP 才会刷新工具参数。
 
-### 9.2 检查与更新 CLI
+### 9.2 受理待办与写回完成结果
+
+Agent 使用已有 `update_todo_status` 工具，不需要创建确认令牌或增加本地配置。
+
+开始处理时受理：
+
+```json
+{"project":"my-project","id":"<待办 ID>","status":"in_progress","note":"已受理，开始检查查询事件和接口响应。"}
+```
+
+完成并验证后，写回实际结果：
+
+```json
+{"project":"my-project","id":"<待办 ID>","status":"done","note":"已修复查询按钮事件绑定，筛选条件正确传入接口。定向回归通过；尚未部署生产。"}
+```
+
+- 首次完成必须填写非空文字 `note`；受理时选填。完成结果保存为 `done_note`，连同 `done_by`、`done_at` 在 cloud 网页「处理结果」展示。
+- 以成功回执中的状态和完成字段为准；调用失败时不能声称 cloud 已标记完成。
+- 重复受理或完成不会重复追加事件、覆盖原结果或刷新完成时间；已完成重试可省略 `note`。重新受理已完成记录也不会把它重开。
+- `list_todos` 传 `status=done` 可查完成记录及结果摘要（最多 500 字加省略号）；`get_todo` 返回完整结果及时间线，AI markdown 也包含完成结果。
+- 需要 `mcp:write` 且在处理范围内；`auto` 可受理及完成，`confirm` 只可受理，`hold` 不可处理。受理记录真实账号及说明，不覆盖人工指派。
+
+上述结果回执需 cloud 部署对应改动后生效，再重连客户端刷新工具说明；现有 CLI 动态转发工具，无需为此重新安装二进制。
+
+### 9.3 检查与更新 CLI
 
 MCP 连接初始化时自动检查发布版本，成功结果缓存 24 小时。有新版或磁盘文件已更新、进程尚未重启时，桥会在 MCP 初始化说明中要求 AI 提醒一次。具体是否展示提醒取决于客户端；也可以直接说：“检查 moo-cloud CLI 是否有更新”，由 AI 调用 `check_cli_update`，手动检查会绕过缓存。
 
@@ -476,7 +500,7 @@ MCP 连接初始化时自动检查发布版本，成功结果缓存 24 小时。
 
 升级后请在每个客户端分别调用 `check_cli_update`，核对 `running_version`、`installed_version` 和 `restart_required`。终端的 `moo-cloud --version` 只说明磁盘文件已更新，不能证明 Codex、WorkBuddy 或 DSH 的旧连接已重启；新建对话也不一定重启客户端共用的 MCP 进程。WorkBuddy 可在 MCP 面板停用再启用 `moo-cloud`；其他客户端重连服务，或完全退出后重开。
 
-### 9.3 查询与发表评论
+### 9.4 查询与发表评论
 
 沿用现有账号 Token 和 cloud 地址，无需修改 `.moo-cloud.json`。异常使用原有 key，TODO 使用原有 ID：
 

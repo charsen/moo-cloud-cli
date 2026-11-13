@@ -1,5 +1,9 @@
 # 更新记录
 
+## Unreleased
+
+- 补充 MCP 待办直接受理、完成结果保存、幂等回执和查询说明；修正 `confirm` 策略允许受理的文档。配套 cloud 改动部署并重连后生效，无 CLI 二进制变更。
+
 ## 0.1.4 — 2026-11-13
 
 - 新增 `comment list|add` 和 MCP `list_comments` / `post_comment`，支持四类异常及 TODO 的团队讨论、稳定分页、真实作者和正文脱敏；同账号同目标同正文在两分钟内去重。
