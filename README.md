@@ -321,26 +321,16 @@ codex exec --skip-git-repo-check "调用 moo_cloud 的 list_projects 工具，�
 
 ### 8.2 WorkBuddy
 
-> WorkBuddy 不会自动加载新 server，写完配置还要在它的面板里启用一次。
+> WorkBuddy 5.11.2 实测可在 MCP 面板直接加载新配置；首次连接需要「信任」，然后确认连接已启用。
 
 1. `moo-cloud agent-config --target=workbuddy --write --force`
-2. 用 `Cmd+Q` 完全退出 WorkBuddy（不是关窗口），确认进程退出：
+2. 打开「专家·技能·连接器 → 连接器 → 自定义连接器」（部分版本入口叫「设置 → MCP」）；
+3. 找到 `moo-cloud`，首次连接点「信任」，确认已启用且显示工具数量；
+4. 新建会话，输入「只用 moo-cloud 调用 list_projects」，以实际返回项目清单为准。
 
-   ```bash
-   pgrep -f "/Applications/WorkBuddy.app/Contents/MacOS/Electron" || echo "已退出"
-   ```
+若面板看不到连接，或更新 CLI 后仍显示旧工具列表，再用 `Cmd+Q` 完全退出 WorkBuddy 后重开，并新建会话。无需每次写入配置都重启。
 
-3. 重新打开 WorkBuddy；
-4. 设置 → MCP（部分版本叫「工具/连接器」），启用 `moo-cloud`；
-5. 新建一个会话。
-
-验证：
-
-```bash
-grep "custom-mcp:moo-cloud" ~/.workbuddy/logs/daemon.log | tail -3
-```
-
-应看到 `wb:mcp:setEnabled` / `wb:mcp:connect` / `stdio-connected`。
+建议用上面的 CLI 命令合并配置，保留其他连接器。WorkBuddy 的「添加 MCP」编辑器保存的是整份 `mcp.json`，手工粘贴时须保留原有条目。
 
 ### 8.3 DeepSeek Harness（DSH）
 
@@ -461,6 +451,8 @@ Agent 通过本地 MCP 桥创建待办时，用 `image_paths` 传入截图的**�
 
 MCP 连接初始化时自动检查发布版本，成功结果缓存 24 小时。有新版或磁盘文件已更新、进程尚未重启时，桥会在 MCP 初始化说明中要求 AI 提醒一次。具体是否展示提醒取决于客户端；也可以直接说：“检查 moo-cloud CLI 是否有更新”，由 AI 调用 `check_cli_update`，手动检查会绕过缓存。
 
+自动检查失败时，也会要求 AI 在会话开始时告知「尚未确认最新版」，业务工具继续可用。手动检查失败会保留已知的运行版本、安装版本和重连状态，并返回明确错误；不会把检查失败报告成「已是最新」。
+
 发现新版后，AI 应先说明目标版本并询问是否安装。用户同意后才调用：
 
 ```json
@@ -469,7 +461,7 @@ MCP 连接初始化时自动检查发布版本，成功结果缓存 24 小时。
 
 这里的版本号是示例，以检查返回的实际版本为准。`update_cli` 是本机写操作，不加入自动批准白名单；`confirm` 是客户端根据用户明确答复传入的确认参数，不能代替客户端的用户审批。检查新版不会自行触发更新。
 
-更新读取本项目的 GitHub Release，访问失败时尝试 Gitee；不发送账号 MCP token。安装前会重新检查目标版本，校验官方 `SHA256SUMS`、文件大小和二进制版本，再在原路径旁保存旧文件备份并替换。多个客户端共用同一文件时，只需更新一次。开发构建不自动覆盖，也不降级。
+更新读取本项目的 GitHub Release，访问失败或限流时尝试 Gitee；不发送账号 MCP token。Gitee 未提供附件大小时仍可检查更新，实际下载须非空、不得超过 64 MiB，且必须通过官方 `SHA256SUMS`；有声明大小时还须一致。安装前会重新检查目标版本和二进制版本，再在原路径旁保存旧文件备份并替换。多个客户端共用同一文件时，只需更新一次。开发构建不自动覆盖，也不降级。
 
 发布信息或附件下载失败都会尝试备用源，备用源必须提供用户确认的同一版本。更新期间用系统锁防止多个客户端同时替换；进程异常结束后锁自动释放。如果期间被其他方式安装了新文件，本次更新会停止并要求重新检查。
 
@@ -546,7 +538,7 @@ marker 的 `root` 写错了；Laravel 在子目录时写子目录名，否则写
 token 失效、被吊销或过期；重新生成。`--cloud` 指向的实例也要对。
 
 **Q：WorkBuddy 里看不到工具**
-只写配置不够：要 `Cmd+Q` 完全退出 → 重开 → MCP 面板启用 → 新建会话。
+先到 MCP 面板确认 `moo-cloud` 已信任、已启用并显示工具数量，再新建会话。仍无工具或升级后列表未刷新时，才 `Cmd+Q` 完全退出后重开。
 
 **Q：DSH 里 `server is disconnected`**
 确认配置在 `- insert:` 下、`command` 指向真实存在的二进制；改完重启 DSH 或新建会话。

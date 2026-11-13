@@ -129,7 +129,15 @@ func handleMcpLine(endpoint, token, line string, writer *bufio.Writer, updater *
 		data, err := updater.callTool(ctx, params.Name, params.Arguments)
 		text, _ := json.Marshal(data)
 		if err != nil {
-			text, _ = json.Marshal(map[string]any{"error": err.Error()})
+			failure := map[string]any{"error": err.Error()}
+			if check, ok := data.(cliUpdateCheck); ok {
+				// 检查失败仍返回已知本机状态，不返回无法确认的 latest_version/update_available。
+				failure["running_version"] = check.RunningVersion
+				if check.InstalledVersion != "" {
+					failure["installed_version"], failure["restart_required"] = check.InstalledVersion, check.RestartRequired
+				}
+			}
+			text, _ = json.Marshal(failure)
 		}
 		writeRaw(writer, map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(rawID), "result": map[string]any{
 			"content": []map[string]any{{"type": "text", "text": string(text)}}, "isError": err != nil,
@@ -247,6 +255,16 @@ func handleMcpLine(endpoint, token, line string, writer *bufio.Writer, updater *
 					updateNotice += " 当前进程 " + check.RunningVersion + "，本机安装 " + check.InstalledVersion + "，最新发布 " + check.LatestVersion + "。" + check.Message
 					if check.UpdateAvailable || check.RestartRequired {
 						updateNotice += " 请在本次会话开始时向用户提醒一次。"
+					}
+				} else {
+					updateNotice += " 当前进程 " + check.RunningVersion + "。"
+					if check.InstalledVersion != "" {
+						updateNotice += " 本机安装 " + check.InstalledVersion + "。"
+					}
+					// 自动检查失败不能静默伪装成没有新版；业务工具继续可用，提醒仅在会话开始时给出。
+					updateNotice += " 本次自动更新检查未完成，不代表已是最新；请在本次会话开始时告知用户，可稍后调用 check_cli_update 重试。"
+					if check.RestartRequired {
+						updateNotice += " 当前 MCP 仍是旧进程，请重新连接 MCP。"
 					}
 				}
 				result["instructions"], _ = json.Marshal(strings.TrimSpace(instructions + "\n" + updateNotice))

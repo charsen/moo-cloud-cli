@@ -160,7 +160,9 @@ func (u *cliUpdater) validateRelease(r cliRelease) error {
 	if err != nil {
 		return err
 	}
-	if asset.Size <= 0 || asset.Size > maxCLIBytes {
+	// Gitee 的 Release API 不提供附件 size，0 在此表示未知；GitHub 仍要求有效大小。
+	// 实际下载始终有体积上限、非空与 SHA-256 校验，不能把未知大小当作零字节坏包。
+	if asset.Size < 0 || asset.Size > maxCLIBytes || (asset.Size == 0 && r.Source != "gitee") {
 		return fmt.Errorf("发布附件大小不合法")
 	}
 	_, err = r.asset("SHA256SUMS")
@@ -277,23 +279,26 @@ func cliFileChanged(original os.FileInfo, path string) bool {
 }
 
 func (u *cliUpdater) check(ctx context.Context, cached bool) (cliUpdateCheck, error) {
+	result := cliUpdateCheck{RunningVersion: u.running}
 	_, installed, err := u.installed(ctx)
 	if err != nil {
-		return cliUpdateCheck{}, err
+		return result, err
 	}
-	release, err := u.release(ctx, cached)
-	if err != nil {
-		return cliUpdateCheck{}, err
-	}
-	latest, _ := cliSemver(release.Tag)
+	result.InstalledVersion = installed
 	current, stable := cliSemver(installed)
 	running, runningStable := cliSemver(u.running)
-	result := cliUpdateCheck{
-		RunningVersion: u.running, InstalledVersion: installed, LatestVersion: strings.TrimPrefix(release.Tag, "v"),
-		UpdateAvailable: stable && cliNewer(latest, current), RestartRequired: runningStable && stable && running != current,
-		ReleaseURL: release.baseURL() + "/tag/" + release.Tag,
-		Message:    "本机已安装最新稳定版。",
+	result.RestartRequired = runningStable && stable && running != current
+
+	release, err := u.release(ctx, cached)
+	if err != nil {
+		// 发布源不可达不影响本机版本判断；调用方仍能提示旧 MCP 进程需要重连。
+		return result, err
 	}
+	latest, _ := cliSemver(release.Tag)
+	result.LatestVersion = strings.TrimPrefix(release.Tag, "v")
+	result.UpdateAvailable = stable && cliNewer(latest, current)
+	result.ReleaseURL = release.baseURL() + "/tag/" + release.Tag
+	result.Message = "本机已安装最新稳定版。"
 	if !stable {
 		result.Message = "本机是开发构建，仅检查发布版本，不自动覆盖开发构建。"
 	} else if result.UpdateAvailable {
@@ -342,7 +347,7 @@ func (u *cliUpdater) download(ctx context.Context, release cliRelease) ([]byte, 
 		return nil, err
 	}
 	digest := sha256.Sum256(data)
-	if int64(len(data)) != asset.Size || hex.EncodeToString(digest[:]) != expected {
+	if len(data) == 0 || (asset.Size > 0 && int64(len(data)) != asset.Size) || hex.EncodeToString(digest[:]) != expected {
 		return nil, fmt.Errorf("下载文件大小或 SHA-256 不匹配，保留原文件")
 	}
 	return data, nil

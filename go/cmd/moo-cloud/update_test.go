@@ -24,15 +24,16 @@ type updateTransport func(*http.Request) (*http.Response, error)
 func (f updateTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 type updateFixture struct {
-	u            *cliUpdater
-	path         string
-	requests     []string
-	version      string
-	payload      []byte
-	checksum     []byte
-	githubStatus int
-	badAsset     bool
-	badSize      bool
+	u              *cliUpdater
+	path           string
+	requests       []string
+	version        string
+	payload        []byte
+	checksum       []byte
+	githubStatus   int
+	giteeOmitsSize bool
+	badAsset       bool
+	badSize        bool
 }
 
 // 真实临时目录覆盖下载、暂存、备份与替换；仅隔离发布 HTTP 和二进制执行。
@@ -80,6 +81,15 @@ func newUpdateFixture(t *testing.T) *updateFixture {
 				r.Assets[0].Size = maxCLIBytes + 1
 			}
 			data, _ = json.Marshal(r)
+			if source == "gitee" && f.giteeOmitsSize {
+				// 真实 Gitee Release API 不提供附件 size；不能让 GitHub 同形夹具掩盖差异。
+				var raw map[string]any
+				_ = json.Unmarshal(data, &raw)
+				for _, item := range raw["assets"].([]any) {
+					delete(item.(map[string]any), "size")
+				}
+				data, _ = json.Marshal(raw)
+			}
 		case strings.HasSuffix(r.URL.Path, "/SHA256SUMS"):
 			data = f.checksum
 		case strings.HasSuffix(r.URL.Path, "/moo-cloud-darwin-arm64"):
@@ -418,5 +428,93 @@ func TestCLIUpdateCancellationBeforeReplace(t *testing.T) {
 	}
 	if _, err := f.u.update(ctx, "0.1.2", true); err == nil || string(mustRead(t, f.path)) != "0.1.1" {
 		t.Fatal("请求取消后不得进入替换步骤", err)
+	}
+}
+
+func TestCLIGiteeMissingAssetSizeFallback(t *testing.T) {
+	f := newUpdateFixture(t)
+	f.githubStatus, f.giteeOmitsSize = http.StatusForbidden, true
+	checked, err := f.u.check(context.Background(), false)
+	if err != nil || !checked.UpdateAvailable || checked.LatestVersion != "0.1.2" || !strings.Contains(checked.ReleaseURL, "gitee.com") {
+		t.Fatalf("GitHub 限流后应使用真实 Gitee 元数据检查新版：%+v %v", checked, err)
+	}
+	result, err := f.u.update(context.Background(), "0.1.2", true)
+	if err != nil || result["updated"] != true || string(mustRead(t, f.path)) != "0.1.2" {
+		t.Fatalf("Gitee 未提供大小时仍应在下载校验后完成更新：%+v %v", result, err)
+	}
+}
+
+func TestCLIGiteeUnknownSizeStillRejectsEmptyAndCorruptDownloads(t *testing.T) {
+	for _, empty := range []bool{false, true} {
+		t.Run(fmt.Sprintf("empty=%v", empty), func(t *testing.T) {
+			f := newUpdateFixture(t)
+			f.githubStatus, f.giteeOmitsSize = http.StatusForbidden, true
+			if empty {
+				f.payload = nil
+				digest := sha256.Sum256(nil)
+				f.checksum = []byte(hex.EncodeToString(digest[:]) + "  moo-cloud-darwin-arm64\n")
+			} else {
+				f.checksum = []byte(strings.Repeat("0", 64) + "  moo-cloud-darwin-arm64\n")
+			}
+			release, err := f.u.release(context.Background(), false)
+			if err != nil {
+				t.Fatalf("缺少元数据大小不应阻断发布发现：%v", err)
+			}
+			if _, err := f.u.download(context.Background(), release); err == nil {
+				t.Fatal("缺少大小不允许下载空文件或绕过 SHA-256")
+			}
+			if string(mustRead(t, f.path)) != "0.1.1" {
+				t.Fatal("失败不应改动已安装文件")
+			}
+		})
+	}
+}
+
+func TestCLICheckFailureKeepsLocalVersionsAndInitializationNotice(t *testing.T) {
+	f := newUpdateFixture(t)
+	f.githubStatus = http.StatusServiceUnavailable
+	original := f.u.client.Transport
+	f.u.client.Transport = updateTransport(func(r *http.Request) (*http.Response, error) {
+		resp, err := original.RoundTrip(r)
+		if err == nil && r.URL.Host == "gitee.com" {
+			resp.StatusCode = http.StatusServiceUnavailable
+		}
+		return resp, err
+	})
+	if err := os.WriteFile(f.path, []byte("0.1.2"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	checked, err := f.u.check(context.Background(), false)
+	if err == nil || checked.RunningVersion != "0.1.1" || checked.InstalledVersion != "0.1.2" || !checked.RestartRequired {
+		t.Fatalf("发布源全失败也不能丢弃本机版本与重连状态：%+v %v", checked, err)
+	}
+	var output bytes.Buffer
+	writer := bufio.NewWriter(&output)
+	handleMcpLine("http://unused.test", "fixture", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_cli_update","arguments":{}}}`, writer, f.u)
+	_ = writer.Flush()
+	var rpc struct {
+		Result struct {
+			IsError bool                    `json:"isError"`
+			Content []struct{ Text string } `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &rpc); err != nil || !rpc.Result.IsError || len(rpc.Result.Content) != 1 {
+		t.Fatal("检查失败必须保留工具错误状态", err)
+	}
+	var details map[string]any
+	if err := json.Unmarshal([]byte(rpc.Result.Content[0].Text), &details); err != nil || details["running_version"] != "0.1.1" || details["installed_version"] != "0.1.2" || details["restart_required"] != true || details["error"] == nil || details["latest_version"] != nil {
+		t.Fatalf("失败回执应包含已知版本，不能谎报未知的最新版本：%+v %v", details, err)
+	}
+	cloud := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 2, "result": map[string]any{"instructions": "保留 cloud 原说明"}})
+	}))
+	defer cloud.Close()
+	output.Reset()
+	handleMcpLine(cloud.URL, "fixture", `{"jsonrpc":"2.0","id":2,"method":"initialize"}`, writer, f.u)
+	_ = writer.Flush()
+	for _, expected := range []string{"保留 cloud 原说明", "未完成", "不代表已是最新", "告知用户", "0.1.1", "0.1.2"} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("初始化不能静默忽略检查失败，缺少 %q：%s", expected, output.String())
+		}
 	}
 }

@@ -227,7 +227,7 @@ func emitWorkbuddy(home string, entry map[string]any, write, force bool) int {
 		return 1
 	}
 	fmt.Fprintf(os.Stderr, "已写入 %s\n", file)
-	fmt.Fprintln(os.Stderr, "下一步：完全退出 WorkBuddy（Cmd+Q）→ 重开 → 在 MCP 面板启用 moo-cloud → 新建会话")
+	fmt.Fprintln(os.Stderr, "下一步：在 WorkBuddy 的 MCP 面板信任并启用 moo-cloud → 新建会话；连接或工具未刷新时，再 Cmd+Q 完全退出后重开")
 
 	return 0
 }
