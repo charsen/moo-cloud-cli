@@ -112,8 +112,8 @@ func TestTodoUpdateSendsStatusAndNote(t *testing.T) {
 }
 
 func TestParseIssueListOptions(t *testing.T) {
-	opts, err := parseIssueListOptions([]string{"--project=p", "--type=runtime", "--status=open", "--limit=5", "--offset=2", "--respect-scope"})
-	if err != nil || opts.typ != "runtime" || opts.status != "open" || opts.limit != 5 || opts.offset != 2 || !opts.respectScope {
+	opts, err := parseIssueListOptions([]string{"--project=p", "--type=runtime", "--status=open", "--env=production", "--limit=5", "--offset=2", "--respect-scope"})
+	if err != nil || opts.typ != "runtime" || opts.status != "open" || opts.env != "production" || opts.limit != 5 || opts.offset != 2 || !opts.respectScope {
 		t.Fatalf("opts=%+v err=%v", opts, err)
 	}
 	for _, bad := range [][]string{

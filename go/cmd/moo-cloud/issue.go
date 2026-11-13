@@ -102,9 +102,9 @@ func runIssueResolve(args []string) int {
 // ---------------------------------------------------------------- issue list
 
 type issueListOptions struct {
-	project, typ, status, token, cloud string
-	limit, offset                      int
-	json, respectScope                 bool
+	project, typ, status, env, token, cloud string
+	limit, offset                           int
+	json, respectScope                      bool
 }
 
 func runIssueList(args []string) int {
@@ -122,6 +122,9 @@ func runIssueList(args []string) int {
 	callArgs := map[string]any{"project": opts.project, "type": opts.typ, "limit": opts.limit, "offset": opts.offset}
 	if opts.status != "" {
 		callArgs["status"] = opts.status
+	}
+	if opts.env != "" {
+		callArgs["env"] = opts.env
 	}
 	if opts.respectScope {
 		callArgs["respect_scope"] = true
@@ -180,6 +183,8 @@ func parseIssueListOptions(args []string) (issueListOptions, error) {
 			opts.typ = value
 		case "status":
 			opts.status = value
+		case "env":
+			opts.env = value
 		case "limit":
 			if _, err := fmt.Sscanf(value, "%d", &opts.limit); err != nil || opts.limit < 1 || opts.limit > 50 {
 				return opts, fmt.Errorf("--limit 需为 1–50")
@@ -217,6 +222,7 @@ func printIssueHelp() {
 list 选项:
   --type=runtime|slow_query|frontend_error|app_error  必填，问题类别
   --status=...        可选 open / in_progress / resolved；默认 open+in_progress
+  --env=...           可选环境过滤，如 production / local
   --limit=20 --offset=0  分页，limit 1–50
   --respect-scope     只列出「我在本项目处理范围」内的异常（默认能力全集）
   --json              输出机器可读 JSON

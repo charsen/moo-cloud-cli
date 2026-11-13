@@ -537,8 +537,9 @@ moo-cloud todo list --project=my-project --assignee=<人员ID>
 moo-cloud todo start --project=my-project --id=<ID> --note="已受理，开始排查"
 moo-cloud todo done  --project=my-project --id=<ID> --note="根因…；改动…；fix/x abc1234；回归通过" --yes
 
-# 列出异常（类型必填；--status 可选 open/in_progress/resolved）
+# 列出异常（类型必填；--status 可选 open/in_progress/resolved；--env 按环境过滤）
 moo-cloud issue list --project=my-project --type=frontend_error --status=open
+moo-cloud issue list --project=my-project --type=runtime --env=production
 # 关闭异常（能力全集四类均可，是否放行由云端范围与策略决定）
 moo-cloud issue resolve --project=my-project --type=frontend_error --key=<12位key> \
   --note="根因…；改动…；fix/x abc1234；验证…" --yes

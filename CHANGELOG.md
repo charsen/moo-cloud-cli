@@ -12,6 +12,7 @@
 - 业务增强：`todo list --mine` 只看指派给我/我领取的待办；`agent-config --target=dsh` 打印 DSH cordis.patch 片段；`create_todo` 预览调用恢复可重试（仅确认写入不重试）。
 - 业务增强（第三轮）：`todo list --assignee=<id>` 按负责人过滤；agent-config 读改写加跨进程文件锁（复用更新锁）；`audit` 报告附「修复命令速查」。
 - 业务增强（第四轮）：新增 `issue list`（按类型/状态/分页/个人范围列出异常），补齐 CLI 与 `todo list` 对称的异常查看能力。
+- 业务增强（第五轮）：`issue list` 新增 `--env` 按环境过滤（对齐云端 `list_issues` 已支持的 env 参数）。
 - 补充 MCP 待办直接受理、完成结果保存、幂等回执和查询说明；修正 `confirm` 策略允许受理的文档。配套 cloud 改动部署并重连后生效，无 CLI 二进制变更。
 
 ## 0.1.4 — 2026-11-13
