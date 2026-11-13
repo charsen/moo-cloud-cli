@@ -14,6 +14,7 @@
 - 业务增强（第四轮）：新增 `issue list`（按类型/状态/分页/个人范围列出异常），补齐 CLI 与 `todo list` 对称的异常查看能力。
 - 业务增强（第五轮）：`issue list` 新增 `--env` 按环境过滤（对齐云端 `list_issues` 已支持的 env 参数）。
 - 文档：README 增加「给 Agent 的操作规范」（定位→读→领取→写回→策略），与 cloud `initialize` instructions 对齐。
+- 业务增强（第六轮）：`audit --summary` 只取云端 `audit_summary` 汇总（不翻明细，快、省流）；需 cloud 已部署该工具。
 - 补充 MCP 待办直接受理、完成结果保存、幂等回执和查询说明；修正 `confirm` 策略允许受理的文档。配套 cloud 改动部署并重连后生效，无 CLI 二进制变更。
 
 ## 0.1.4 — 2026-11-13

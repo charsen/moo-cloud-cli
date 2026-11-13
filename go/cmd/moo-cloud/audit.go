@@ -23,6 +23,7 @@ type auditOptions struct {
 	maxPages       int
 	respectScope   bool
 	mine           bool
+	summaryOnly    bool
 	json           bool
 	failOnFindings bool
 	out            string
@@ -58,6 +59,57 @@ type auditProject struct {
 	Summary         map[string]any         `json:"summary,omitempty"`
 }
 
+// runAuditSummaryOnly 只调用云端 audit_summary 输出对账数字，不翻明细。
+// 需要 cloud 已部署 audit_summary；旧 cloud 会返回工具错误并明确提示。
+func runAuditSummaryOnly(cloud, token string, opts auditOptions) int {
+	now := time.Now()
+	rows := make([]auditProject, 0, len(opts.projects))
+	hasError := false
+	for _, project := range opts.projects {
+		args := map[string]any{"project": project, "stale_days": opts.staleDays}
+		if opts.mine {
+			args["mine"] = true
+		}
+		data, err := mcpCall(cloud, token, "audit_summary", args)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: 取 audit_summary 失败（可能云端未部署该工具）：%v\n", project, err)
+			hasError = true
+			continue
+		}
+		rows = append(rows, auditProject{Project: project, Summary: data})
+	}
+	if opts.json {
+		printJSONObject(map[string]any{
+			"generated_at": now.Format(time.RFC3339),
+			"stale_days":   opts.staleDays,
+			"scope":        scopeLabel(opts.respectScope),
+			"mine":         opts.mine,
+			"summary_only": true,
+			"projects":     rows,
+		})
+		if hasError {
+			return 1
+		}
+		return 0
+	}
+	for _, r := range rows {
+		todos, _ := r.Summary["todos"].(map[string]any)
+		fmt.Printf("%s：done 无说明 %v，open 逾期 %v，in_progress 长期 %v\n",
+			r.Project, todos["done_without_note"], todos["open_stale"], todos["in_progress_long"])
+		if issues, ok := r.Summary["issues"].(map[string]any); ok {
+			for _, typ := range opts.types {
+				if m, ok := issues[typ].(map[string]any); ok {
+					fmt.Printf("  %s：open %v（长期未再出现 %v）\n", typ, m["open"], m["stale_open"])
+				}
+			}
+		}
+	}
+	if hasError {
+		return 1
+	}
+	return 0
+}
+
 func runAudit(args []string) int {
 	if contains(args, "--help") || contains(args, "-h") {
 		printAuditHelp()
@@ -80,6 +132,11 @@ func runAudit(args []string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		return 1
+	}
+
+	// --summary：只取云端 audit_summary 汇总，不翻明细（快、省流）。
+	if opts.summaryOnly {
+		return runAuditSummaryOnly(cloud, token, opts)
 	}
 
 	now := time.Now()
@@ -474,6 +531,7 @@ func printAuditHelp() {
   --max-pages=40      每个列表最多翻页数，防异常游标死循环；超限会告警而非静默截断
   --respect-scope     只看「我在本项目处理范围」内的数据（默认全集，两者是两个维度）
   --mine              待办统计只看我领取/被指派的（异常无 assignee，始终全量）
+  --summary           只取云端 audit_summary 汇总，不翻明细（快、省流；需 cloud 已部署）
   --fail-on-findings  发现违规时退出码 2（便于 CI/流水线卡质量）
   --out=<path>        写入 Markdown 报告文件；不填则打印到标准输出
   --json              输出机器可读 JSON
@@ -522,7 +580,7 @@ func parseAuditOptions(args []string) (auditOptions, error) {
 		}
 		key, value, hasValue := strings.Cut(arg[2:], "=")
 		switch key {
-		case "json", "respect-scope", "fail-on-findings", "mine":
+		case "json", "respect-scope", "fail-on-findings", "mine", "summary":
 			enabled, err := parseBoolFlag(key, value, hasValue)
 			if err != nil {
 				return opts, err
@@ -534,8 +592,10 @@ func parseAuditOptions(args []string) (auditOptions, error) {
 				opts.respectScope = enabled
 			case "fail-on-findings":
 				opts.failOnFindings = enabled
-			default:
+			case "mine":
 				opts.mine = enabled
+			default:
+				opts.summaryOnly = enabled
 			}
 			continue
 		}

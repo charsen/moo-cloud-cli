@@ -391,6 +391,34 @@ func TestParseAuditOptionsMineAndFailOnFindings(t *testing.T) {
 	}
 }
 
+func TestAuditSummaryOnlyCallsAuditSummaryOnly(t *testing.T) {
+	var tools []string
+	server := mcpStub(t, func(name string, args map[string]any) map[string]any {
+		tools = append(tools, name)
+		if name == "audit_summary" {
+			return map[string]any{
+				"project": "p",
+				"todos":   map[string]any{"done_without_note": 2, "open_stale": 1, "in_progress_long": 0},
+				"issues":  map[string]any{"runtime": map[string]any{"open": 3, "stale_open": 1}},
+			}
+		}
+		return map[string]any{"todos": []any{}, "issues": []any{}}
+	})
+	defer server.Close()
+	code := runAudit([]string{"--project=p", "--summary", "--json", "--token=fixture", "--cloud=" + server.URL})
+	if code != 0 {
+		t.Fatalf("code=%d", code)
+	}
+	for _, want := range tools {
+		if want != "audit_summary" {
+			t.Fatalf("--summary 不应调用其它工具，却调用了 %q（全部：%v）", want, tools)
+		}
+	}
+	if len(tools) == 0 {
+		t.Fatal("应至少调用一次 audit_summary")
+	}
+}
+
 func TestDshBlock(t *testing.T) {
 	out := dshBlock("/opt/bin/moo-cloud")
 	for _, want := range []string{"- insert:", "dsh-mcp-client", "serverName: moo-cloud", "/opt/bin/moo-cloud"} {

@@ -555,6 +555,7 @@ moo-cloud issue resolve --project=my-project --type=frontend_error --key=<12位k
 # 只读审计：不写云端、不改状态
 moo-cloud audit --project=my-project,other-project --stale-days=7 --out=moo-cloud-audit.md
 moo-cloud audit --project=my-project --json
+moo-cloud audit --project=my-project --summary   # 只取云端汇总，不翻明细
 ```
 
 > **两个维度，不能混**：`--type` 与审计默认覆盖的是**能力全集**（runtime / slow_query / frontend_error / app_error / todo 都可处理）；每个使用者用账号默认 + 成员级项目设置（`ai_handled_types`）决定**自己处理哪些**，只影响本人、不改变能力全集。命令行默认按能力全集读写，只有显式 `--respect-scope` 才把读取收窄到「我的处理范围」。`frontend_error` 同样是可勾选的处理类别，若某账号未勾选只是个人设置，不是能力缺失。
