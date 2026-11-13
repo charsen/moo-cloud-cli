@@ -28,6 +28,24 @@ CLI 更新源为 GitHub Release，访问失败时尝试 Gitee。附图功能还�
 - 当前 CLI 代码完整回归为 85 项顶层测试通过，含 race 检查；WorkBuddy 隔离项目完成 63 次实际工具调用，正式更新检查连续两次复测通过。详细范围及历史构建记录见下文。
 - 2026-11-12 发布时未执行真实 Agent 聊天附图上传；2026-11-13 已补充 WorkBuddy 桌面本地隔离验收，见下文。本次仍未部署 cloud，不能将源码发布或本地验收视为线上功能已生效。
 
+## 最近构建 · 0.1.5（2026-11-13）
+
+源码提交：`1200e757ca1fafecec8ee437c118c769794b3b02`（干净工作区，六个平台均为 `vcs.modified=false`）；Go 1.27.4，`CGO_ENABLED=0`，`make -C go dist VERSION=0.1.5`。
+
+| 文件（位于 `dist/`） | 字节大小 | SHA-256 |
+| --- | ---: | --- |
+| `moo-cloud-darwin-amd64` | 7630144 | `8f427cba505eebad0c5eed8ec82d0353f6059c70ed5d8ec31b944c4f16b0fd73` |
+| `moo-cloud-darwin-arm64` | 7045426 | `8d124aea77e4610b51bb43cb24cb971fdf6195004143bd6327aa804dfdc3ecc2` |
+| `moo-cloud-linux-amd64` | 7483552 | `8988d4e695c7594454b2ddad2d2a7ebf04ea18a58e1c9dd6f4e691909e2b8e32` |
+| `moo-cloud-linux-arm64` | 6881440 | `16d53e61aa5a16f3e15bb76f18d2e657bf14368151c04bacbbd81bca9a7b4aff` |
+| `moo-cloud-windows-amd64.exe` | 7704576 | `0d49f5eee7106ce851ca8b5710309df5907fafd3fb644392bef2762fc9a3f7ca` |
+| `moo-cloud-windows-arm64.exe` | 6977024 | `0ab670bf275df6c67ae0b238efa1e847a9a45f4680dd2024a4cd574840f8b813` |
+
+- 六个平台的源码提交、架构、文件格式与产物中的版本字符串已核对；`SHA256SUMS` 按本表生成。
+- macOS arm64 执行 `--version` 返回 `moo-cloud 0.1.5`；Go 链接器 ad-hoc 签名，未 Developer ID 签名或公证；其他平台未执行目标机启动验证。
+- 已上传 GitHub 与 Gitee Release（标签 `0.1.5`）：六个二进制 + `SHA256SUMS`。从 GitHub 实际下载全部资产校验 SHA-256 一致，Gitee 的 `SHA256SUMS` 与本地逐字节一致；`check_cli_update` 返回 `latest_version=0.1.5` 且 `release_url` 指向 GitHub `0.1.5`。
+- 流程偏差说明：本次先打 tag、后补构建记录，且 `0.1.5` 为 lightweight tag（`0.1.4` 为 annotated）。构建源码仍是 tag 指向的 `1200e75`；后续发布应先提交构建记录再创建 annotated tag。
+
 ## 最近构建 · 0.1.4（2026-11-13）
 
 源码提交：`b212e2c088c88381e04c0c11f42fb43ea17afadc`（干净工作区，六个平台均为 `vcs.modified=false`）；Go 1.27.4，`CGO_ENABLED=0`，`make -C go dist VERSION=0.1.4`。标签同时包含本节构建记录，构建源码到标签之间仅有文档变化。
