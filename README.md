@@ -384,10 +384,18 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | moo
 
 带 `mcp:write` 的账号通过本地桥可使用 16 个工具：下列 14 个云端工具（含只读 `audit_summary`）及 2 个本机更新工具；`audit_summary` 需 cloud 部署对应版本后生效。只读 Token 不暴露云端写工具；本机更新仍需用户明确同意，不能借 Token 权限跳过确认。
 
+**给 Agent 的操作规范**（`mcp-server` 在 MCP 初始化时随 `instructions` 下发的要点，详见 cloud 版本文档）：
+
+1. **定位**：先 `list_projects` 拿项目清单、处理范围(handled_types)与策略(type_policies)；批量看健康度先 `audit_summary`。
+2. **读**：`list_issues --env` 取问题、`get_issue`/`get_issue_markdown` 看详情（markdown 省 token、已脱敏）；`list_todos --mine` 取我负责的待办、`get_todo` 看单条。
+3. **领取**：开始处理待办前先 `update_todo_status` 置 `in_progress`（记录领取人），**不要默默处理**。
+4. **写回**：修好并验证后 `update_todo_status` 置 `done` / `resolve_issue` 关闭异常；`note` 必填「根因+改动+分支 sha+验证」；以工具回执为准，**失败或超时不得宣称完成**。
+5. **策略**：待办 auto 可受理+完成、confirm 只能受理、hold 不处理；异常 auto 才可 resolve；范围外类别 403；评论属讨论（confirm/hold 也可评论）但仍需用户同意。
+
 | 工具 | 用途 |
 |---|---|
 | `list_projects` | 项目清单、待处理计数、有效处理范围、策略 |
-| `list_issues` | 按项目/类型列问题 |
+| `list_issues` | 按项目/类型列问题（可按 env 过滤） |
 | `get_issue` | 单条问题完整上下文（可选 payload） |
 | `get_issue_markdown` | 单条问题的 AI markdown |
 | `list_apps` | 项目下的软件（AppProduct） |
