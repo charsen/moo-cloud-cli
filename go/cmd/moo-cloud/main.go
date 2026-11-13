@@ -24,6 +24,10 @@ func main() {
 		os.Exit(runAgentConfig(args[1:]))
 	case "todo":
 		os.Exit(runTodo(args[1:]))
+	case "issue":
+		os.Exit(runIssue(args[1:]))
+	case "audit":
+		os.Exit(runAudit(args[1:]))
 	case "comment":
 		os.Exit(runComment(args[1:]))
 	case "version", "--version", "-v":
@@ -47,6 +51,10 @@ func printHelp() {
   moo-cloud mcp-server [选项]       本地 stdio MCP 桥（给 Codex / WorkBuddy 等）
   moo-cloud agent-config [选项]     生成/写入各客户端的 MCP 配置
   moo-cloud todo add [选项]         记录一条云端待办
+  moo-cloud todo list [选项]        列出待办（可按状态/分页/个人范围）
+  moo-cloud todo start|done [选项]  受理或完成待办并写回处理结果
+  moo-cloud issue resolve [选项]    标记异常已解决（写根因/改动/分支 sha/验证）
+  moo-cloud audit [选项]            只读审计：done 无说明 / 逾期 open / 长期 in_progress / 疑似未关闭异常
   moo-cloud comment list|add [选项] 查询或发表异常/TODO 的文字评论
 
 preflight:

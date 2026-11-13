@@ -212,6 +212,10 @@ App 的项目、身份校验结果及失败原因会同时显示在 Markdown 和
 | `moo-cloud mcp-server` | 本地 stdio MCP 桥，给 AI 客户端用 |
 | `moo-cloud agent-config` | 生成/写入客户端的 MCP 配置 |
 | `moo-cloud todo add` | 记录一条云端待办（可选从问题生成） |
+| `moo-cloud todo list` | 列出待办，可按状态/分页/个人处理范围过滤 |
+| `moo-cloud todo start` / `todo done` | 受理或完成待办并写回处理结果（done 必填 note） |
+| `moo-cloud issue resolve` | 标记异常已解决（写根因/改动/分支 sha/验证） |
+| `moo-cloud audit` | 只读审计：done 无说明 / 逾期 open / 长期 in_progress / 疑似未关闭异常 |
 | `moo-cloud comment list` | 分页查询某条异常或 TODO 的讨论 |
 | `moo-cloud comment add` | 发表文字评论，与网页讨论共用数据 |
 | `moo-cloud --version` | 查看版本 |
@@ -515,6 +519,33 @@ moo-cloud comment add --project=my-project --type=runtime --key=abcdef123456 --b
 发表文字需 `mcp:write`、有效处理范围且目标策略为 `auto`，正文为 1–5000 字。命令会询问确认；自动化调用需先获用户同意，再加 `--yes`。同账号、同记录、相同正文在 2 分钟内复用已有评论，避免重试重复评论或通知。已完成/已解决记录仍可讨论，不改变状态；删除或无权访问的记录不可操作。
 
 MCP 中调用 `list_comments` / `post_comment`，参数为 `project`、`type`、`key` 或 `id`，发表时再传 `body`。写评论不加入自动批准白名单；本次只支持文字发表。cloud 部署评论工具后重连 MCP 获取新工具定义；本地 `comment` 命令需使用包含本轮功能的 CLI。
+
+### 9.5 命令行闭环与审计
+
+除 `todo add`、`comment` 外，命令行也能直接完成「受理/完成回写/关闭异常」与只读审计，便于脚本与 CI：
+
+```bash
+# 列出待办（默认 open+in_progress；--status=done 查完成）
+moo-cloud todo list --project=my-project --status=done --limit=20
+
+# 受理 / 完成并写回处理结果（done 必填 --note：根因/改动/分支 sha/验证）
+moo-cloud todo start --project=my-project --id=<ID> --note="已受理，开始排查"
+moo-cloud todo done  --project=my-project --id=<ID> --note="根因…；改动…；fix/x abc1234；回归通过" --yes
+
+# 关闭异常（能力全集四类均可，是否放行由云端范围与策略决定）
+moo-cloud issue resolve --project=my-project --type=frontend_error --key=<12位key> \
+  --note="根因…；改动…；fix/x abc1234；验证…" --yes
+
+# 只读审计：不写云端、不改状态
+moo-cloud audit --project=my-project,other-project --stale-days=7 --out=moo-cloud-audit.md
+moo-cloud audit --project=my-project --json
+```
+
+> **两个维度，不能混**：`--type` 与审计默认覆盖的是**能力全集**（runtime / slow_query / frontend_error / app_error / todo 都可处理）；每个使用者用账号默认 + 成员级项目设置（`ai_handled_types`）决定**自己处理哪些**，只影响本人、不改变能力全集。命令行默认按能力全集读写，只有显式 `--respect-scope` 才把读取收窄到「我的处理范围」。`frontend_error` 同样是可勾选的处理类别，若某账号未勾选只是个人设置，不是能力缺失。
+
+`audit` 输出四类可疑项：已完成但无处理说明、open 且超期未处理、in_progress 且超期未完成、open 且长期未再出现（疑似已修复未关闭）的异常。需要 `mcp:write` 的写操作（start/done/resolve）在非交互环境必须加 `--yes`，并仍受云端处理范围与策略（auto/confirm/hold）校验。
+
+
 
 ## 10. 输出与可观测性
 
