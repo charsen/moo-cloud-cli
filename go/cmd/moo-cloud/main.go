@@ -53,6 +53,7 @@ func printHelp() {
   moo-cloud todo add [选项]         记录一条云端待办
   moo-cloud todo list [选项]        列出待办（可按状态/分页/个人范围）
   moo-cloud todo start|done [选项]  受理(领取:状态+领取人)或完成待办并写回处理结果
+  moo-cloud issue list [选项]       列出异常（类型/状态/分页/个人范围）
   moo-cloud issue resolve [选项]    标记异常已解决（写根因/改动/分支 sha/验证）
   moo-cloud audit [选项]            只读审计：done 无说明 / 逾期 open / 长期 in_progress / 疑似未关闭异常
   moo-cloud comment list|add [选项] 查询或发表异常/TODO 的文字评论

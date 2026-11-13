@@ -214,6 +214,7 @@ App 的项目、身份校验结果及失败原因会同时显示在 Markdown 和
 | `moo-cloud todo add` | 记录一条云端待办（可选从问题生成） |
 | `moo-cloud todo list` | 列出待办，可按状态/分页/个人处理范围过滤 |
 | `moo-cloud todo start` / `todo done` | 受理或完成待办并写回处理结果（done 必填 note） |
+| `moo-cloud issue list` | 列出异常（按类型/状态/分页/个人处理范围） |
 | `moo-cloud issue resolve` | 标记异常已解决（写根因/改动/分支 sha/验证） |
 | `moo-cloud audit` | 只读审计：done 无说明 / 逾期 open / 长期 in_progress / 疑似未关闭异常 |
 | `moo-cloud comment list` | 分页查询某条异常或 TODO 的讨论 |
@@ -536,6 +537,8 @@ moo-cloud todo list --project=my-project --assignee=<人员ID>
 moo-cloud todo start --project=my-project --id=<ID> --note="已受理，开始排查"
 moo-cloud todo done  --project=my-project --id=<ID> --note="根因…；改动…；fix/x abc1234；回归通过" --yes
 
+# 列出异常（类型必填；--status 可选 open/in_progress/resolved）
+moo-cloud issue list --project=my-project --type=frontend_error --status=open
 # 关闭异常（能力全集四类均可，是否放行由云端范围与策略决定）
 moo-cloud issue resolve --project=my-project --type=frontend_error --key=<12位key> \
   --note="根因…；改动…；fix/x abc1234；验证…" --yes

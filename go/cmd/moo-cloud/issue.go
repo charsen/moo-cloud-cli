@@ -20,13 +20,25 @@ func runIssue(args []string) int {
 		printIssueHelp()
 		return 0
 	}
-	if args[0] != "resolve" {
-		fmt.Fprintf(os.Stderr, "未知 issue 子命令：%s\n\n", args[0])
+	// 兼容旧写法 `issue --project=...`（无子命令）按 resolve 处理。
+	action, rest := args[0], args[1:]
+	if strings.HasPrefix(action, "--") {
+		action, rest = "resolve", args
+	}
+	switch action {
+	case "resolve":
+		return runIssueResolve(rest)
+	case "list":
+		return runIssueList(rest)
+	default:
+		fmt.Fprintf(os.Stderr, "未知 issue 子命令：%s\n\n", action)
 		printIssueHelp()
 		return 1
 	}
+}
 
-	opts, err := parseIssueResolveOptions(args[1:])
+func runIssueResolve(args []string) int {
+	opts, err := parseIssueResolveOptions(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "参数错误："+err.Error())
 		return 1
@@ -87,11 +99,130 @@ func runIssue(args []string) int {
 	return 0
 }
 
-func printIssueHelp() {
-	fmt.Print(`用法：moo-cloud issue resolve --project=<slug> --type=<类型> --key=<12位key> --note="..." [--yes]
+// ---------------------------------------------------------------- issue list
 
-  --type=runtime|slow_query|frontend_error|app_error  问题类别（能力全集）
-  --key=<12位十六进制>  问题 key，来自 list_issues
+type issueListOptions struct {
+	project, typ, status, token, cloud string
+	limit, offset                      int
+	json, respectScope                 bool
+}
+
+func runIssueList(args []string) int {
+	opts, err := parseIssueListOptions(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "参数错误："+err.Error())
+		return 1
+	}
+	cloud, token, err := resolveCloud(opts.cloud, opts.token)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+
+	callArgs := map[string]any{"project": opts.project, "type": opts.typ, "limit": opts.limit, "offset": opts.offset}
+	if opts.status != "" {
+		callArgs["status"] = opts.status
+	}
+	if opts.respectScope {
+		callArgs["respect_scope"] = true
+	}
+
+	data, err := mcpCall(cloud, token, "list_issues", callArgs)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "查询异常失败："+err.Error())
+		return 1
+	}
+	if opts.json {
+		printJSONObject(data)
+		return 0
+	}
+	for _, item := range anySlice(data["issues"]) {
+		issue, _ := item.(map[string]any)
+		fmt.Printf("[%v] %v · %v 次 · %v\n", issue["key"], issue["status"], issue["count"], issue["last_seen"])
+		if summary := issueSummary(issue); summary != "" {
+			fmt.Printf("    %v\n", summary)
+		}
+	}
+	fmt.Printf("本页异常：%v 条\n", data["count"])
+	if data["has_more"] == true {
+		fmt.Printf("下一页：--offset=%v\n", data["next_offset"])
+	}
+
+	return 0
+}
+
+func parseIssueListOptions(args []string) (issueListOptions, error) {
+	opts := issueListOptions{limit: 20}
+	for _, arg := range args {
+		if !strings.HasPrefix(arg, "--") {
+			return opts, fmt.Errorf("请使用 --选项=值")
+		}
+		key, value, hasValue := strings.Cut(arg[2:], "=")
+		if key == "json" || key == "respect-scope" {
+			enabled, err := parseBoolFlag(key, value, hasValue)
+			if err != nil {
+				return opts, err
+			}
+			if key == "json" {
+				opts.json = enabled
+			} else {
+				opts.respectScope = enabled
+			}
+			continue
+		}
+		if !hasValue || strings.TrimSpace(value) == "" {
+			return opts, fmt.Errorf("--%s 需要非空值", key)
+		}
+		switch key {
+		case "project":
+			opts.project = value
+		case "type":
+			opts.typ = value
+		case "status":
+			opts.status = value
+		case "limit":
+			if _, err := fmt.Sscanf(value, "%d", &opts.limit); err != nil || opts.limit < 1 || opts.limit > 50 {
+				return opts, fmt.Errorf("--limit 需为 1–50")
+			}
+		case "offset":
+			if _, err := fmt.Sscanf(value, "%d", &opts.offset); err != nil || opts.offset < 0 {
+				return opts, fmt.Errorf("--offset 需为非负整数")
+			}
+		case "token":
+			opts.token = value
+		case "cloud":
+			opts.cloud = value
+		default:
+			return opts, fmt.Errorf("未知参数 --%s", key)
+		}
+	}
+	if strings.TrimSpace(opts.project) == "" {
+		return opts, fmt.Errorf("--project 必填")
+	}
+	if !isIssueType(opts.typ) {
+		return opts, fmt.Errorf("--type 只能是 runtime / slow_query / frontend_error / app_error")
+	}
+	if opts.status != "" && opts.status != "open" && opts.status != "in_progress" && opts.status != "resolved" {
+		return opts, fmt.Errorf("--status 只能是 open / in_progress / resolved")
+	}
+
+	return opts, nil
+}
+
+func printIssueHelp() {
+	fmt.Print(`用法：
+  moo-cloud issue list    --project=<slug> --type=<类型> [--status=...] [--limit --offset] [--respect-scope]
+  moo-cloud issue resolve --project=<slug> --type=<类型> --key=<12位key> --note="..." [--yes]
+
+list 选项:
+  --type=runtime|slow_query|frontend_error|app_error  必填，问题类别
+  --status=...        可选 open / in_progress / resolved；默认 open+in_progress
+  --limit=20 --offset=0  分页，limit 1–50
+  --respect-scope     只列出「我在本项目处理范围」内的异常（默认能力全集）
+  --json              输出机器可读 JSON
+
+resolve 选项:
+  --key=<12位十六进制>  问题 key，来自 issue list
   --note="..."         必填：根因 / 改动 / 分支 sha / 验证结果
   --resolved-by=...    可选，默认取当前账号名
   --yes                非交互确认（脚本/AI 必须显式加），仍受云端范围与策略校验
@@ -99,6 +230,7 @@ func printIssueHelp() {
   --token=... --cloud=...  沿用既有默认值
 
 例：
+  moo-cloud issue list --project=my-project --type=frontend_error --status=open
   moo-cloud issue resolve --project=my-project --type=runtime --key=abcdef123456 \
     --note="根因 xxx；改动 yyy；fix/zzz abc1234；回归通过" --yes
 `)

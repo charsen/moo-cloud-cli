@@ -111,6 +111,38 @@ func TestTodoUpdateSendsStatusAndNote(t *testing.T) {
 	}
 }
 
+func TestParseIssueListOptions(t *testing.T) {
+	opts, err := parseIssueListOptions([]string{"--project=p", "--type=runtime", "--status=open", "--limit=5", "--offset=2", "--respect-scope"})
+	if err != nil || opts.typ != "runtime" || opts.status != "open" || opts.limit != 5 || opts.offset != 2 || !opts.respectScope {
+		t.Fatalf("opts=%+v err=%v", opts, err)
+	}
+	for _, bad := range [][]string{
+		{"--project=p"},
+		{"--project=p", "--type=unknown"},
+		{"--project=p", "--type=runtime", "--status=bogus"},
+		{"--project=p", "--type=runtime", "--limit=0"},
+		{"--project=p", "--type=runtime", "--offset=-1"},
+	} {
+		if _, err := parseIssueListOptions(bad); err == nil {
+			t.Fatalf("应拒绝：%v", bad)
+		}
+	}
+}
+
+func TestIssueListCallsListIssues(t *testing.T) {
+	var tool string
+	var captured map[string]any
+	server := mcpStub(t, func(name string, args map[string]any) map[string]any {
+		tool, captured = name, args
+		return map[string]any{"project": "p", "type": "runtime", "count": 0, "issues": []any{}, "has_more": false}
+	})
+	defer server.Close()
+	code := runIssueList([]string{"--project=p", "--type=runtime", "--status=open", "--json", "--token=fixture", "--cloud=" + server.URL})
+	if code != 0 || tool != "list_issues" || captured["type"] != "runtime" || captured["status"] != "open" {
+		t.Fatalf("code=%d tool=%s args=%+v", code, tool, captured)
+	}
+}
+
 func TestParseIssueResolveOptions(t *testing.T) {
 	base := []string{"--project=p", "--type=runtime", "--key=ABCDEF123456"}
 	if _, err := parseIssueResolveOptions(base); err == nil {

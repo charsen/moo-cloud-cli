@@ -11,6 +11,7 @@
 - 安全与健壮性加固：`--cloud` 强制 https（仅 localhost 例外）防 token 明文；预检对「某项目全类型失败」与 `git status/branch` 失败计硬失败，marker `root` 拒绝越界，`verify.file` 限 2MiB；agent-config 读改写加 mtime/size 守卫并用同一份内容备份、Codex 前缀探测防重复 TOML；自更新保留原权限、主备源 `SHA256SUMS` 交叉校验、备份只留最近 3 份、取锁短暂重试；非幂等写（create_todo/post_comment/resolve/update）网络错误不自动重试；含业务数据的 JSON 报告新建为 0600。
 - 业务增强：`todo list --mine` 只看指派给我/我领取的待办；`agent-config --target=dsh` 打印 DSH cordis.patch 片段；`create_todo` 预览调用恢复可重试（仅确认写入不重试）。
 - 业务增强（第三轮）：`todo list --assignee=<id>` 按负责人过滤；agent-config 读改写加跨进程文件锁（复用更新锁）；`audit` 报告附「修复命令速查」。
+- 业务增强（第四轮）：新增 `issue list`（按类型/状态/分页/个人范围列出异常），补齐 CLI 与 `todo list` 对称的异常查看能力。
 - 补充 MCP 待办直接受理、完成结果保存、幂等回执和查询说明；修正 `confirm` 策略允许受理的文档。配套 cloud 改动部署并重连后生效，无 CLI 二进制变更。
 
 ## 0.1.4 — 2026-11-13
