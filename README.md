@@ -382,7 +382,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | moo
 
 ## 9. MCP 工具
 
-带 `mcp:write` 的账号通过本地桥可使用 16 个工具：下列 14 个云端工具（含只读 `audit_summary`）及 2 个本机更新工具；`audit_summary` 需 cloud 部署对应版本后生效。只读 Token 不暴露云端写工具；本机更新仍需用户明确同意，不能借 Token 权限跳过确认。
+带 `mcp:write` 的账号通过本地桥可使用 16 个工具：下列 14 个云端工具（含只读 `audit_summary`）及 2 个本机更新工具。工具清单随 cloud 部署版本变化——较旧的 cloud 可能没有 `audit_summary`、`list_todos.mine/assignee_id` 等新参数，以实际 `tools/list` 为准；对旧 cloud 相应功能会自动回退或提示。只读 Token 不暴露云端写工具；本机更新仍需用户明确同意，不能借 Token 权限跳过确认。
 
 **给 Agent 的操作规范**（`mcp-server` 在 MCP 初始化时随 `instructions` 下发的要点，详见 cloud 版本文档）：
 
@@ -533,7 +533,9 @@ MCP 中调用 `list_comments` / `post_comment`，参数为 `project`、`type`、
 
 ### 9.5 命令行闭环与审计
 
-除 `todo add`、`comment` 外，命令行也能直接完成「受理/完成回写/关闭异常」与只读审计，便于脚本与 CI：
+除 `todo add`、`comment` 外，命令行也能直接完成「受理/完成回写/关闭异常」与只读审计，便于脚本与 CI。
+
+> **`preflight` 与 `audit` 的分工**：`preflight` 面向「本地仓库预检 + 按项目拉队列落盘报告」（`_queue.json`/`_metrics.json`，适合夜间巡检与交付留痕）；`audit` 面向「云端对账」（done 无说明 / 逾期 / 长期 unfinished / 疑似未关闭异常，输出 Markdown/JSON，`--summary` 只取汇总）。两者都只读、互不改状态；日常看某个项目的健康度用 `audit`，核对本地多仓库基线用 `preflight`。
 
 ```bash
 # 列出待办（默认 open+in_progress；--status=done 查完成；--mine 只看指派给我）
