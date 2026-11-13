@@ -13,8 +13,10 @@ func runAgentConfig(args []string) int {
 	if contains(args, "--help") || contains(args, "-h") {
 		fmt.Print(`agent-config：生成/写入客户端 MCP 配置
 
-  --target=codex|workbuddy|json|claude
+  --target=codex|workbuddy|json|claude|dsh
   --write    --force    --home=<dir>
+
+  dsh 只打印 cordis.patch.yml 片段（DSH 不使用 mcp.json，需手工合并到 - insert: 下）。
 `)
 
 		return 0
@@ -91,11 +93,39 @@ func runAgentConfig(args []string) int {
 		fmt.Println(string(raw))
 
 		return 0
+	case "dsh":
+		// DSH 用 @deepseek-ai/dsh-mcp-client 插件 + cordis.patch.yml，不用 mcp.json；此处只给片段。
+		fmt.Print(dshBlock(exe))
+		if opts.write {
+			fmt.Fprintln(os.Stderr, "提示：dsh 配置需手工合并到 ~/.dsh/profiles/*/cordis.patch.yml 的 - insert: 下；未自动写入。")
+		}
+
+		return 0
 	default:
-		fmt.Fprintf(os.Stderr, "未知 target：%s（支持 codex / workbuddy / json / claude）\n", opts.target)
+		fmt.Fprintf(os.Stderr, "未知 target：%s（支持 codex / workbuddy / json / claude / dsh）\n", opts.target)
 
 		return 1
 	}
+}
+
+// dshBlock 生成 DSH 的 cordis.patch.yml 片段（需放在 - insert: 下）。
+func dshBlock(exe string) string {
+	return "- insert:\n" +
+		"    - id: mcp-moo-cloud\n" +
+		"      name: \"@deepseek-ai/dsh-mcp-client\"\n" +
+		"      config:\n" +
+		"        serverName: moo-cloud\n" +
+		"        transport: stdio\n" +
+		"        command: " + yamlString(exe) + "\n" +
+		"        args: [\"mcp-server\"]\n" +
+		"        toolCallTimeoutMs: 120000\n"
+}
+
+// yamlString 双引号转义，路径含特殊字符时安全。
+func yamlString(value string) string {
+	replacer := strings.NewReplacer("\\", "\\\\", "\"", "\\\"")
+
+	return "\"" + replacer.Replace(value) + "\""
 }
 
 func codexBlock(exe string) string {

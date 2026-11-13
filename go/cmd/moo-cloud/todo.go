@@ -127,6 +127,7 @@ list 选项:
   --status=...        可选 open / in_progress / done；默认 open+in_progress
   --limit=20 --offset=0  分页，limit 1–50
   --respect-scope     只列出「我在本项目处理范围」内的待办（默认按能力全集读）
+  --mine              只看指派给我/我领取的待办（云端按 token 账号过滤 assignee）
 
 start/done 选项:
   --id=<TODO ID>      待办 ID（ULID）
@@ -317,7 +318,8 @@ func addTodo(opts todoOptions) (map[string]any, error) {
 		args["images"] = images
 	}
 
-	preview, err := mcpCallNoRetry(cloud, token, "create_todo", args)
+	// 预览调用只读、幂等，可安全重试；仅“确认写入”那次不重试，避免重复创建。
+	preview, err := mcpCall(cloud, token, "create_todo", args)
 	if err != nil {
 		return nil, err
 	}
@@ -487,7 +489,7 @@ func assigneeLabel(todo map[string]any) string {
 type todoListOptions struct {
 	project, status, token, cloud string
 	limit, offset                 int
-	json, respectScope            bool
+	json, respectScope, mine      bool
 }
 
 func runTodoList(args []string) int {
@@ -509,6 +511,10 @@ func runTodoList(args []string) int {
 	// 能力全集默认读；只有显式 --respect-scope 才收窄到「我在本项目的处理范围」。
 	if opts.respectScope {
 		callArgs["respect_scope"] = true
+	}
+	// 只看“指派给我/我领取”的待办（云端按 token 账号过滤 assignee）。
+	if opts.mine {
+		callArgs["mine"] = true
 	}
 
 	data, err := mcpCall(cloud, token, "list_todos", callArgs)
@@ -546,15 +552,18 @@ func parseTodoListOptions(args []string) (todoListOptions, error) {
 			return opts, fmt.Errorf("请使用 --选项=值")
 		}
 		key, value, hasValue := strings.Cut(arg[2:], "=")
-		if key == "json" || key == "respect-scope" {
+		if key == "json" || key == "respect-scope" || key == "mine" {
 			enabled, err := parseBoolFlag(key, value, hasValue)
 			if err != nil {
 				return opts, err
 			}
-			if key == "json" {
+			switch key {
+			case "json":
 				opts.json = enabled
-			} else {
+			case "respect-scope":
 				opts.respectScope = enabled
+			default:
+				opts.mine = enabled
 			}
 			continue
 		}

@@ -318,6 +318,26 @@ func TestAuditJsonAndOutMutuallyExclusive(t *testing.T) {
 	}
 }
 
+func TestTodoListMineOption(t *testing.T) {
+	opts, err := parseTodoListOptions([]string{"--project=p", "--mine"})
+	if err != nil || !opts.mine {
+		t.Fatalf("--mine 未生效：%+v err=%v", opts, err)
+	}
+	opts, err = parseTodoListOptions([]string{"--project=p", "--mine=0"})
+	if err != nil || opts.mine {
+		t.Fatalf("--mine=0 不应开启：%+v err=%v", opts, err)
+	}
+}
+
+func TestDshBlock(t *testing.T) {
+	out := dshBlock("/opt/bin/moo-cloud")
+	for _, want := range []string{"- insert:", "dsh-mcp-client", "serverName: moo-cloud", "/opt/bin/moo-cloud"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("dsh 片段缺少 %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestHelpListsAllSubcommands(t *testing.T) {
 	old := os.Stdout
 	r, w, err := os.Pipe()
