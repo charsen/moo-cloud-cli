@@ -2,8 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -144,7 +147,6 @@ func TestParseAuditOptions(t *testing.T) {
 		t.Fatalf("opts=%+v err=%v", opts, err)
 	}
 	for _, bad := range [][]string{
-		{},
 		{"--project=a", "--types=bogus"},
 		{"--project=a", "--stale-days=-1"},
 		{"--project=a", "--max-pages=0"},
@@ -213,9 +215,65 @@ func TestFetchPagesFollowsCursor(t *testing.T) {
 		return map[string]any{"todos": []any{map[string]any{"id": "2"}}, "has_more": false}
 	})
 	defer server.Close()
-	rows, err := fetchPages("list_todos", map[string]any{"project": "p"}, server.URL, "fixture", 40)
-	if err != nil || len(rows) != 2 || calls != 2 {
-		t.Fatalf("rows=%d calls=%d err=%v", len(rows), calls, err)
+	rows, truncated, err := fetchPages("list_todos", map[string]any{"project": "p"}, server.URL, "fixture", 40)
+	if err != nil || truncated || len(rows) != 2 || calls != 2 {
+		t.Fatalf("rows=%d truncated=%v calls=%d err=%v", len(rows), truncated, calls, err)
+	}
+}
+
+func TestFetchPagesReportsTruncation(t *testing.T) {
+	server := mcpStub(t, func(tool string, args map[string]any) map[string]any {
+		offset := int(args["offset"].(float64))
+		return map[string]any{"todos": []any{map[string]any{"id": "x"}}, "has_more": true, "next_offset": float64(offset + 1)}
+	})
+	defer server.Close()
+	rows, truncated, err := fetchPages("list_todos", map[string]any{"project": "p"}, server.URL, "fixture", 2)
+	if err != nil || !truncated || len(rows) != 2 {
+		t.Fatalf("rows=%d truncated=%v err=%v", len(rows), truncated, err)
+	}
+}
+
+func TestAutoProjectSlugs(t *testing.T) {
+	dir := t.TempDir()
+	// 后端仓库：从 deployments 取 project
+	backend := `{"role":"backend","deployments":[{"project":"alpha","env_file":".env"}]}`
+	if err := os.WriteFile(filepath.Join(dir, ".moo-cloud.json"), []byte(backend), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 软件仓库：从顶层 project 取
+	sub := filepath.Join(dir, "web")
+	_ = os.MkdirAll(sub, 0o755)
+	app := `{"role":"app","project":"beta","product":"p","platforms":["web"]}`
+	if err := os.WriteFile(filepath.Join(sub, ".moo-cloud.json"), []byte(app), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := autoProjectSlugs(dir)
+	want := []string{"alpha", "beta"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("autoProjectSlugs=%v want %v", got, want)
+	}
+}
+
+func TestAuditFailOnFindingsExitCode(t *testing.T) {
+	server := mcpStub(t, func(tool string, args map[string]any) map[string]any {
+		switch tool {
+		case "list_todos":
+			if args["status"] == "done" {
+				return map[string]any{"todos": []any{map[string]any{"id": "D", "status": "done", "done_note": ""}}, "count": 1, "has_more": false}
+			}
+			return map[string]any{"todos": []any{}, "count": 0, "has_more": false}
+		case "list_issues":
+			return map[string]any{"issues": []any{}, "count": 0, "has_more": false}
+		}
+		return map[string]any{} // audit_summary 未命中 → tryAuditSummary 回退
+	})
+	defer server.Close()
+	base := []string{"--project=p", "--token=fixture", "--cloud=" + server.URL, "--json"}
+	if code := runAudit(append(append([]string{}, base...), "--fail-on-findings")); code != 2 {
+		t.Fatalf("有违规且 --fail-on-findings 应返回 2，实际 %d", code)
+	}
+	if code := runAudit(base); code != 0 {
+		t.Fatalf("无 --fail-on-findings 应返回 0，实际 %d", code)
 	}
 }
 
@@ -227,6 +285,25 @@ func TestAppendClaimReminder(t *testing.T) {
 	for _, want := range []string{"update_todo_status", "in_progress", "领取人"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("领取提醒缺少 %q：%q", want, out)
+		}
+	}
+}
+
+func TestHelpListsAllSubcommands(t *testing.T) {
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	printHelp()
+	_ = w.Close()
+	os.Stdout = old
+	raw, _ := io.ReadAll(r)
+
+	for _, cmd := range []string{"preflight", "mcp-server", "agent-config", "todo", "issue", "audit", "comment"} {
+		if !strings.Contains(string(raw), "moo-cloud "+cmd) {
+			t.Fatalf("帮助缺少子命令 %s", cmd)
 		}
 	}
 }

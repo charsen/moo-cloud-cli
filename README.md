@@ -381,7 +381,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | moo
 
 ## 9. MCP 工具
 
-带 `mcp:write` 的账号通过本地桥可使用 15 个工具：下列 13 个云端工具及 2 个本机更新工具。只读 Token 不暴露云端写工具；本机更新仍需用户明确同意，不能借 Token 权限跳过确认。
+带 `mcp:write` 的账号通过本地桥可使用 16 个工具：下列 14 个云端工具（含只读 `audit_summary`）及 2 个本机更新工具；`audit_summary` 需 cloud 部署对应版本后生效。只读 Token 不暴露云端写工具；本机更新仍需用户明确同意，不能借 Token 权限跳过确认。
 
 | 工具 | 用途 |
 |---|---|
@@ -390,7 +390,8 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | moo
 | `get_issue` | 单条问题完整上下文（可选 payload） |
 | `get_issue_markdown` | 单条问题的 AI markdown |
 | `list_apps` | 项目下的软件（AppProduct） |
-| `list_todos` | 待办列表 |
+| `list_todos` | 待办列表（支持 missing_note/done_by/时间区间筛选） |
+| `audit_summary` | 只读对账汇总：done 无说明 / 逾期 / 长期 / 异常未关闭计数 |
 | `get_todo` | 待办详情（含附件） |
 | `get_todo_image` | 读取待办图片 |
 | `list_comments` | 分页查询异常或 TODO 的团队讨论 |
@@ -399,7 +400,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | moo
 | `resolve_issue` | 标记问题已解决（需 `mcp:write`） |
 | `update_todo_status` | 受理/完成待办并保存完成结果（需 `mcp:write`） |
 
-写操作校验项目权限、处理范围和策略：`auto` 待办可受理及完成，`confirm` 待办仅可受理，`hold` 不可处理；发表评论及解决异常仍需对应策略许可。客户端的写操作审批继续生效。
+写操作校验项目权限、处理范围和策略：`auto` 待办可受理及完成，`confirm` 待办仅可受理，`hold` 不可处理；解决异常仍需对应策略许可；发表评论不受 ai_policy（auto/confirm/hold 均可），但仍受处理范围与 `mcp:write` 约束。客户端的写操作审批继续生效。
 
 使用本地 `mcp-server` 桥时，还提供两个本机工具（不发送到 cloud）：
 
@@ -517,7 +518,7 @@ moo-cloud comment add --project=my-project --type=runtime --key=abcdef123456 --b
 
 `--type` 支持 `runtime`、`slow_query`、`frontend_error`、`app_error`、`todo`；异常只传 `--key`，TODO 只传 `--id`。查询按时间正序分页，有后续评论时返回 `next_offset`；下一次设置 `--offset`。已有附图返回数量，可在网页讨论查看。
 
-发表文字需 `mcp:write`、有效处理范围且目标策略为 `auto`，正文为 1–5000 字。命令会询问确认；自动化调用需先获用户同意，再加 `--yes`。同账号、同记录、相同正文在 2 分钟内复用已有评论，避免重试重复评论或通知。已完成/已解决记录仍可讨论，不改变状态；删除或无权访问的记录不可操作。
+发表文字需 `mcp:write`、有效处理范围（评论不受 ai_policy，confirm/hold 待办也可评论），正文为 1–5000 字。命令会询问确认；自动化调用需先获用户同意，再加 `--yes`。同账号、同记录、相同正文在 2 分钟内复用已有评论，避免重试重复评论或通知。已完成/已解决记录仍可讨论，不改变状态；删除或无权访问的记录不可操作。
 
 MCP 中调用 `list_comments` / `post_comment`，参数为 `project`、`type`、`key` 或 `id`，发表时再传 `body`。写评论不加入自动批准白名单；本次只支持文字发表。cloud 部署评论工具后重连 MCP 获取新工具定义；本地 `comment` 命令需使用包含本轮功能的 CLI。
 
@@ -545,6 +546,38 @@ moo-cloud audit --project=my-project --json
 > **两个维度，不能混**：`--type` 与审计默认覆盖的是**能力全集**（runtime / slow_query / frontend_error / app_error / todo 都可处理）；每个使用者用账号默认 + 成员级项目设置（`ai_handled_types`）决定**自己处理哪些**，只影响本人、不改变能力全集。命令行默认按能力全集读写，只有显式 `--respect-scope` 才把读取收窄到「我的处理范围」。`frontend_error` 同样是可勾选的处理类别，若某账号未勾选只是个人设置，不是能力缺失。
 
 `audit` 输出四类可疑项：已完成但无处理说明、open 且超期未处理、in_progress 且超期未完成、open 且长期未再出现（疑似已修复未关闭）的异常。需要 `mcp:write` 的写操作（start/done/resolve）在非交互环境必须加 `--yes`，并仍受云端处理范围与策略（auto/confirm/hold）校验。
+
+- **免填 slug**：`audit`/`todo list` 省略 `--project` 时会从 `--root`（默认当前目录）及下两层的 `.moo-cloud.json` 自动取项目。
+- **CI 门禁**：加 `--fail-on-findings`，发现违规时退出码为 2（区别于参数/网络错误的 1）。
+- **截断告警**：命中 `--max-pages` 上限会显式提示「可能不完整」，不静默截断。
+- **降本**：对支持新接口的 cloud，done 扫描走 `missing_note` 过滤、并可用 `audit_summary` 取汇总（旧 cloud 自动回退，不影响使用）。
+
+CI / 定时示例（发现违规即失败）：
+
+```bash
+# GitHub Actions / cron 里：
+moo-cloud audit --root=/path/to/workspace --stale-days=7 \
+  --out=moo-cloud-audit.md --fail-on-findings || exit 1
+```
+
+```yaml
+# .github/workflows/audit.yml（示意，token 用 secrets 注入）
+name: moo-cloud-audit
+on: { schedule: [{ cron: "0 1 * * *" }], workflow_dispatch: {} }
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          curl -fsSL -o moo-cloud https://github.com/charsen/moo-cloud-cli/releases/latest/download/moo-cloud-linux-amd64
+          chmod +x moo-cloud
+          MOO_CLOUD_MCP_TOKEN="${{ secrets.MOO_CLOUD_MCP_TOKEN }}" \
+            ./moo-cloud audit --project=my-project --out=moo-cloud-audit.md --fail-on-findings
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: moo-cloud-audit, path: moo-cloud-audit.md }
+```
 
 
 

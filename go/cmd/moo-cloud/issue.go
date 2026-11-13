@@ -74,6 +74,12 @@ func runIssue(args []string) int {
 	}
 	issue, _ := data["issue"].(map[string]any)
 	fmt.Printf("问题 %v 已标记为 %v（项目 %v）\n", issue["key"], issue["status"], data["project"])
+	if resolvedAt, _ := issue["resolved_at"].(string); resolvedAt != "" {
+		fmt.Printf("解决时间：%v\n", resolvedAt)
+	}
+	if resolvedBy, _ := issue["resolved_by"].(string); resolvedBy != "" {
+		fmt.Printf("解决人：%v\n", resolvedBy)
+	}
 	if already, _ := issue["already_resolved"].(bool); already {
 		fmt.Println("此前已解决，本次未重复写入。")
 	}

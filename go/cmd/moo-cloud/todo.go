@@ -458,6 +458,18 @@ func validTodoID(id string) bool {
 	return todoIDPattern.MatchString(strings.TrimSpace(id))
 }
 
+// assigneeLabel 从待办对象里取领取人（assignee.name 或 id），无则空串。
+func assigneeLabel(todo map[string]any) string {
+	assignee, _ := todo["assignee"].(map[string]any)
+	if name, _ := assignee["name"].(string); strings.TrimSpace(name) != "" {
+		return name
+	}
+	if id, _ := assignee["id"].(string); strings.TrimSpace(id) != "" {
+		return id
+	}
+	return ""
+}
+
 // ---------------------------------------------------------------- todo list
 
 type todoListOptions struct {
@@ -498,7 +510,11 @@ func runTodoList(args []string) int {
 	}
 	for _, item := range anySlice(data["todos"]) {
 		todo, _ := item.(map[string]any)
-		fmt.Printf("[%v] %v · %v · %v\n", todo["id"], todo["status"], todo["priority"], todo["title"])
+		line := fmt.Sprintf("[%v] %v · %v · %v", todo["id"], todo["status"], todo["priority"], todo["title"])
+		if name := assigneeLabel(todo); name != "" {
+			line += " · 领取人 " + name
+		}
+		fmt.Println(line)
 		if note, _ := todo["done_note"].(string); note != "" {
 			fmt.Printf("    结果：%v\n", oneLine(note))
 		}
@@ -621,6 +637,9 @@ func runTodoUpdate(args []string, status string) int {
 	}
 	todo, _ := data["todo"].(map[string]any)
 	fmt.Printf("待办 %v 已更新为 %v\n", todo["id"], todo["status"])
+	if name := assigneeLabel(todo); name != "" {
+		fmt.Printf("领取人：%v\n", name)
+	}
 	if saved, _ := todo["done_note"].(string); saved != "" {
 		fmt.Printf("结果：%v\n", oneLine(saved))
 	}

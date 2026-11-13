@@ -17,14 +17,16 @@ import (
 // 才把读取收窄到「我在本项目处理范围」，两者不混用。
 
 type auditOptions struct {
-	projects     []string
-	types        []string
-	staleDays    int
-	maxPages     int
-	respectScope bool
-	json         bool
-	out          string
-	token, cloud string
+	projects       []string
+	types          []string
+	staleDays      int
+	maxPages       int
+	respectScope   bool
+	json           bool
+	failOnFindings bool
+	out            string
+	root           string
+	token, cloud   string
 }
 
 type auditItem struct {
@@ -50,7 +52,9 @@ type auditProject struct {
 	IssuesStaleOpen map[string][]auditItem `json:"issues_stale_open"`
 	IssueOpenCounts map[string]int         `json:"issue_open_counts"`
 	Scanned         map[string]int         `json:"scanned"`
+	Warnings        []string               `json:"warnings,omitempty"`
 	Errors          []string               `json:"errors,omitempty"`
+	Summary         map[string]any         `json:"summary,omitempty"`
 }
 
 func runAudit(args []string) int {
@@ -63,6 +67,14 @@ func runAudit(args []string) int {
 		fmt.Fprintln(os.Stderr, "参数错误："+err.Error())
 		return 1
 	}
+	// 未显式给 --project 时，从当前目录及下两层的 .moo-cloud.json 自动取 slug。
+	if len(opts.projects) == 0 {
+		opts.projects = autoProjectSlugs(opts.root)
+		if len(opts.projects) == 0 {
+			fmt.Fprintln(os.Stderr, "未指定 --project，且未在 --root 内找到任何 .moo-cloud.json")
+			return 1
+		}
+	}
 	cloud, token, err := resolveCloud(opts.cloud, opts.token)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
@@ -71,7 +83,7 @@ func runAudit(args []string) int {
 
 	now := time.Now()
 	reports := make([]auditProject, 0, len(opts.projects))
-	exitErr := false
+	hasError := false
 	for _, project := range opts.projects {
 		report := auditProject{
 			Project:         project,
@@ -81,7 +93,7 @@ func runAudit(args []string) int {
 		}
 		scanProject(cloud, token, project, opts, now, &report)
 		if len(report.Errors) > 0 {
-			exitErr = true
+			hasError = true
 		}
 		reports = append(reports, report)
 	}
@@ -93,10 +105,7 @@ func runAudit(args []string) int {
 			"scope":        scopeLabel(opts.respectScope),
 			"projects":     reports,
 		})
-		if exitErr {
-			return 1
-		}
-		return 0
+		return auditExitCode(opts, reports, hasError)
 	}
 
 	md := renderAuditMarkdown(reports, opts, now)
@@ -115,10 +124,29 @@ func runAudit(args []string) int {
 		fmt.Print(md)
 	}
 
-	if exitErr {
+	return auditExitCode(opts, reports, hasError)
+}
+
+// auditExitCode：错误优先；--fail-on-findings 且有违规时返回 2（区别于参数/网络错误的 1）。
+func auditExitCode(opts auditOptions, reports []auditProject, hasError bool) int {
+	if hasError {
 		return 1
 	}
+	if opts.failOnFindings && countFindings(reports) > 0 {
+		return 2
+	}
 	return 0
+}
+
+func countFindings(reports []auditProject) int {
+	n := 0
+	for _, r := range reports {
+		n += len(r.DoneWithoutNote) + len(r.OpenStale) + len(r.InProgressLong)
+		for _, items := range r.IssuesStaleOpen {
+			n += len(items)
+		}
+	}
+	return n
 }
 
 func scanProject(cloud, token, project string, opts auditOptions, now time.Time, report *auditProject) {
@@ -134,10 +162,18 @@ func scanProject(cloud, token, project string, opts auditOptions, now time.Time,
 		return args
 	}
 
+	// 云端若支持 audit_summary，顺带取一份汇总概览（失败则跳过，不影响明细）。
+	if summary, ok := tryAuditSummary(cloud, token, project, opts.staleDays); ok {
+		report.Summary = summary
+	}
+
 	// open + in_progress 一次性拉取，再按状态分类。
-	todos, err := fetchPages("list_todos", base(nil), cloud, token, opts.maxPages)
+	todos, truncated, err := fetchPages("list_todos", base(nil), cloud, token, opts.maxPages)
 	if err != nil {
 		report.Errors = append(report.Errors, "list_todos: "+err.Error())
+	}
+	if truncated {
+		report.Warnings = append(report.Warnings, "open/in_progress 待办结果被 --max-pages 截断，可能不完整")
 	}
 	for _, todo := range todos {
 		switch status, _ := todo["status"].(string); status {
@@ -154,10 +190,13 @@ func scanProject(cloud, token, project string, opts auditOptions, now time.Time,
 		}
 	}
 
-	// 已完成待办：找出没写 done_note 的。
-	done, err := fetchPages("list_todos", base(map[string]any{"status": "done"}), cloud, token, opts.maxPages)
+	// 已完成待办：优先用云端 missing_note 过滤只取缺说明的；旧云端会忽略该参数，客户端再兜底过滤。
+	done, truncated, err := fetchPages("list_todos", base(map[string]any{"status": "done", "missing_note": true}), cloud, token, opts.maxPages)
 	if err != nil {
 		report.Errors = append(report.Errors, "list_todos(done): "+err.Error())
+	}
+	if truncated {
+		report.Warnings = append(report.Warnings, "done 待办结果被 --max-pages 截断，可能漏报")
 	}
 	for _, todo := range done {
 		report.Scanned["todos_done"]++
@@ -168,10 +207,13 @@ func scanProject(cloud, token, project string, opts auditOptions, now time.Time,
 
 	// 各类 open 异常：统计未关闭数量，并挑出长期未再出现的（疑似已修复未关闭）。
 	for _, typ := range opts.types {
-		issues, err := fetchPages("list_issues", base(map[string]any{"type": typ, "status": "open"}), cloud, token, opts.maxPages)
+		issues, truncated, err := fetchPages("list_issues", base(map[string]any{"type": typ, "status": "open"}), cloud, token, opts.maxPages)
 		if err != nil {
 			report.Errors = append(report.Errors, "list_issues("+typ+"): "+err.Error())
 			continue
+		}
+		if truncated {
+			report.Warnings = append(report.Warnings, "异常("+typ+")结果被 --max-pages 截断，可能漏报")
 		}
 		report.Scanned["issues_"+typ] = len(issues)
 		for _, issue := range issues {
@@ -183,8 +225,21 @@ func scanProject(cloud, token, project string, opts auditOptions, now time.Time,
 	}
 }
 
+// tryAuditSummary 尝试调用云端 audit_summary；旧云端无此工具时静默返回 false。
+func tryAuditSummary(cloud, token, project string, staleDays int) (map[string]any, bool) {
+	data, err := mcpCall(cloud, token, "audit_summary", map[string]any{"project": project, "stale_days": staleDays})
+	if err != nil {
+		return nil, false
+	}
+	if _, ok := data["todos"].(map[string]any); !ok {
+		return nil, false
+	}
+	return data, true
+}
+
 // fetchPages 按服务端 next_offset 翻页拉全量；maxPages 兜底防止异常游标死循环。
-func fetchPages(tool string, baseArgs map[string]any, cloud, token string, maxPages int) ([]map[string]any, error) {
+// 返回 truncated=true 表示触达 maxPages 上限而可能仍有更多，调用方应告警而不是当作完整。
+func fetchPages(tool string, baseArgs map[string]any, cloud, token string, maxPages int) ([]map[string]any, bool, error) {
 	var all []map[string]any
 	offset := 0
 	key := "todos"
@@ -198,7 +253,7 @@ func fetchPages(tool string, baseArgs map[string]any, cloud, token string, maxPa
 		}
 		data, err := mcpCall(cloud, token, tool, args)
 		if err != nil {
-			return all, err
+			return all, false, err
 		}
 		for _, item := range anySlice(data[key]) {
 			if row, ok := item.(map[string]any); ok {
@@ -207,15 +262,48 @@ func fetchPages(tool string, baseArgs map[string]any, cloud, token string, maxPa
 		}
 		hasMore, _ := data["has_more"].(bool)
 		if !hasMore {
-			break
+			return all, false, nil
 		}
 		next, ok := data["next_offset"].(float64)
 		if !ok || int(next) <= offset {
-			break
+			return all, false, nil
 		}
 		offset = int(next)
+		// 翻满 maxPages 但仍有更多数据 → 截断。
+		if page == maxPages-1 {
+			return all, true, nil
+		}
 	}
-	return all, nil
+	return all, false, nil
+}
+
+// autoProjectSlugs 从 root 及下两层的 .moo-cloud.json 收集项目 slug，免手填 --project。
+func autoProjectSlugs(root string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(slug string) {
+		slug = strings.TrimSpace(slug)
+		if slug != "" && !seen[slug] {
+			seen[slug] = true
+			out = append(out, slug)
+		}
+	}
+	for _, path := range findMarkers(root) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		data, _, err := decodeMarker(raw)
+		if err != nil {
+			continue
+		}
+		add(data.Project)
+		for _, d := range data.Deployments {
+			add(d.Project)
+		}
+	}
+	sortStrings(out)
+	return out
 }
 
 func todoAuditItem(todo map[string]any) auditItem {
@@ -273,8 +361,17 @@ func renderAuditMarkdown(reports []auditProject, opts auditOptions, now time.Tim
 		for _, e := range r.Errors {
 			fmt.Fprintf(&b, "> 读取异常：%s\n", e)
 		}
-		if len(r.Errors) > 0 {
+		for _, w := range r.Warnings {
+			fmt.Fprintf(&b, "> ⚠️ %s\n", w)
+		}
+		if len(r.Errors) > 0 || len(r.Warnings) > 0 {
 			b.WriteString("\n")
+		}
+
+		if r.Summary != nil {
+			todos, _ := r.Summary["todos"].(map[string]any)
+			fmt.Fprintf(&b, "> 云端汇总(audit_summary)：done 无说明 %v，open 逾期 %v，in_progress 长期 %v\n\n",
+				todos["done_without_note"], todos["open_stale"], todos["in_progress_long"])
 		}
 
 		fmt.Fprintf(&b, "### 已完成但无处理说明（%d）\n\n", len(r.DoneWithoutNote))
@@ -351,16 +448,19 @@ func auditSummaryLine(reports []auditProject) string {
 }
 
 func printAuditHelp() {
-	fmt.Print(`用法：moo-cloud audit --project=<slug>[,<slug>...] [选项]
+	fmt.Print(`用法：moo-cloud audit [--project=<slug>[,<slug>...]] [选项]
 
 只读对账：不写云端、不改状态。默认按「能力全集」扫描所有类别，不按个人处理范围过滤。
+不给 --project 时，从 --root（默认当前目录）及下两层的 .moo-cloud.json 自动取项目 slug。
 
 选项:
-  --project=a,b       要审计的项目 slug，可用逗号分隔多个（必填）
+  --project=a,b       要审计的项目 slug，逗号分隔；省略则自动从 marker 取
+  --root=<dir>        自动发现 marker 的根目录，默认当前目录
   --types=runtime,slow_query,frontend_error,app_error  只扫指定异常类别（默认全部）
   --stale-days=7      「逾期/长期」阈值天数，默认 7
-  --max-pages=40      每个列表最多翻页数，防异常游标死循环，默认 40
+  --max-pages=40      每个列表最多翻页数，防异常游标死循环；超限会告警而非静默截断
   --respect-scope     只看「我在本项目处理范围」内的数据（默认全集，两者是两个维度）
+  --fail-on-findings  发现违规时退出码 2（便于 CI/流水线卡质量）
   --out=<path>        写入 Markdown 报告文件；不填则打印到标准输出
   --json              输出机器可读 JSON
   --token=... --cloud=...  沿用既有默认值
@@ -400,6 +500,7 @@ func parseAuditOptions(args []string) (auditOptions, error) {
 		types:     []string{"runtime", "slow_query", "frontend_error", "app_error"},
 		staleDays: 7,
 		maxPages:  40,
+		root:      ".",
 	}
 	for _, arg := range args {
 		if !strings.HasPrefix(arg, "--") {
@@ -407,15 +508,18 @@ func parseAuditOptions(args []string) (auditOptions, error) {
 		}
 		key, value, hasValue := strings.Cut(arg[2:], "=")
 		switch key {
-		case "json", "respect-scope":
+		case "json", "respect-scope", "fail-on-findings":
 			enabled, err := parseBoolFlag(key, value, hasValue)
 			if err != nil {
 				return opts, err
 			}
-			if key == "json" {
+			switch key {
+			case "json":
 				opts.json = enabled
-			} else {
+			case "respect-scope":
 				opts.respectScope = enabled
+			default:
+				opts.failOnFindings = enabled
 			}
 			continue
 		}
@@ -429,6 +533,8 @@ func parseAuditOptions(args []string) (auditOptions, error) {
 					opts.projects = append(opts.projects, slug)
 				}
 			}
+		case "root":
+			opts.root = value
 		case "types":
 			opts.types = opts.types[:0]
 			for _, typ := range strings.Split(value, ",") {
@@ -465,9 +571,6 @@ func parseAuditOptions(args []string) (auditOptions, error) {
 		default:
 			return opts, fmt.Errorf("未知参数 --%s", key)
 		}
-	}
-	if len(opts.projects) == 0 {
-		return opts, fmt.Errorf("--project 必填（可用逗号分隔多个项目）")
 	}
 
 	return opts, nil

@@ -6,6 +6,8 @@
 - 新增只读 `audit` 命令：按项目扫描「已完成但无处理说明 / open 逾期 / in_progress 长期 / 疑似已修复未关闭」的待办与异常，输出 Markdown 或 JSON，不写云端、不改状态。
 - 明确「能力全集」与「个人处理范围」是两个正交维度：命令与审计默认按能力全集，只有 `--respect-scope` 才收窄到「我的处理范围」；`frontend_error` 为可勾选类别，账号未勾选属个人设置而非能力缺失。
 - `mcp-server` 初始化说明新增「开始处理先领取」提醒：受理（`status=in_progress`）记录领取状态与领取人（已有经办人保留），避免操作者未领取就静默处理；`todo start` 帮助同步说明。
+- `audit` 强化：`--fail-on-findings`（有违规退出码 2）、省略 `--project` 时从 `.moo-cloud.json` 自动取项目、命中 `--max-pages` 显式告警不静默截断；对支持新接口的 cloud，done 扫描走 `missing_note` 并可用 `audit_summary` 取汇总（旧 cloud 自动回退）。
+- 回执显示领取人：`todo list/start/done` 输出领取人（`assignee`），`issue resolve` 输出解决时间/解决人。
 - 补充 MCP 待办直接受理、完成结果保存、幂等回执和查询说明；修正 `confirm` 策略允许受理的文档。配套 cloud 改动部署并重连后生效，无 CLI 二进制变更。
 
 ## 0.1.4 — 2026-11-13
