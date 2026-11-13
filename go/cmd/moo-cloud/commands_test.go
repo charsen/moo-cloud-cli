@@ -379,6 +379,18 @@ func TestAuditMarkdownHasFixHints(t *testing.T) {
 	}
 }
 
+func TestParseAuditOptionsMineAndFailOnFindings(t *testing.T) {
+	opts, err := parseAuditOptions([]string{"--project=p", "--mine", "--fail-on-findings", "--stale-days=3"})
+	if err != nil || !opts.mine || !opts.failOnFindings || opts.staleDays != 3 {
+		t.Fatalf("opts=%+v err=%v", opts, err)
+	}
+	// 二者独立：只给 --mine 不应误开 fail-on-findings
+	o2, _ := parseAuditOptions([]string{"--project=p", "--mine"})
+	if !o2.mine || o2.failOnFindings {
+		t.Fatalf("mine 与 fail-on-findings 串了：%+v", o2)
+	}
+}
+
 func TestDshBlock(t *testing.T) {
 	out := dshBlock("/opt/bin/moo-cloud")
 	for _, want := range []string{"- insert:", "dsh-mcp-client", "serverName: moo-cloud", "/opt/bin/moo-cloud"} {

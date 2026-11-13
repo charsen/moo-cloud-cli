@@ -22,6 +22,7 @@ type auditOptions struct {
 	staleDays      int
 	maxPages       int
 	respectScope   bool
+	mine           bool
 	json           bool
 	failOnFindings bool
 	out            string
@@ -103,6 +104,7 @@ func runAudit(args []string) int {
 			"generated_at": now.Format(time.RFC3339),
 			"stale_days":   opts.staleDays,
 			"scope":        scopeLabel(opts.respectScope),
+			"mine":         opts.mine,
 			"projects":     reports,
 		})
 		return auditExitCode(opts, reports, hasError)
@@ -156,6 +158,10 @@ func scanProject(cloud, token, project string, opts auditOptions, now time.Time,
 		if opts.respectScope {
 			args["respect_scope"] = true
 		}
+		// 只看我负责（assignee=我）的待办；异常无 assignee，始终全量。
+		if opts.mine {
+			args["mine"] = true
+		}
 		for k, v := range extra {
 			args[k] = v
 		}
@@ -163,7 +169,7 @@ func scanProject(cloud, token, project string, opts auditOptions, now time.Time,
 	}
 
 	// 云端若支持 audit_summary，顺带取一份汇总概览（失败则跳过，不影响明细）。
-	if summary, ok := tryAuditSummary(cloud, token, project, opts.staleDays); ok {
+	if summary, ok := tryAuditSummary(cloud, token, project, opts.staleDays, opts.mine); ok {
 		report.Summary = summary
 	}
 
@@ -226,8 +232,12 @@ func scanProject(cloud, token, project string, opts auditOptions, now time.Time,
 }
 
 // tryAuditSummary 尝试调用云端 audit_summary；旧云端无此工具时静默返回 false。
-func tryAuditSummary(cloud, token, project string, staleDays int) (map[string]any, bool) {
-	data, err := mcpCall(cloud, token, "audit_summary", map[string]any{"project": project, "stale_days": staleDays})
+func tryAuditSummary(cloud, token, project string, staleDays int, mine bool) (map[string]any, bool) {
+	args := map[string]any{"project": project, "stale_days": staleDays}
+	if mine {
+		args["mine"] = true
+	}
+	data, err := mcpCall(cloud, token, "audit_summary", args)
 	if err != nil {
 		return nil, false
 	}
@@ -463,6 +473,7 @@ func printAuditHelp() {
   --stale-days=7      「逾期/长期」阈值天数，默认 7
   --max-pages=40      每个列表最多翻页数，防异常游标死循环；超限会告警而非静默截断
   --respect-scope     只看「我在本项目处理范围」内的数据（默认全集，两者是两个维度）
+  --mine              待办统计只看我领取/被指派的（异常无 assignee，始终全量）
   --fail-on-findings  发现违规时退出码 2（便于 CI/流水线卡质量）
   --out=<path>        写入 Markdown 报告文件；不填则打印到标准输出
   --json              输出机器可读 JSON
@@ -511,7 +522,7 @@ func parseAuditOptions(args []string) (auditOptions, error) {
 		}
 		key, value, hasValue := strings.Cut(arg[2:], "=")
 		switch key {
-		case "json", "respect-scope", "fail-on-findings":
+		case "json", "respect-scope", "fail-on-findings", "mine":
 			enabled, err := parseBoolFlag(key, value, hasValue)
 			if err != nil {
 				return opts, err
@@ -521,8 +532,10 @@ func parseAuditOptions(args []string) (auditOptions, error) {
 				opts.json = enabled
 			case "respect-scope":
 				opts.respectScope = enabled
-			default:
+			case "fail-on-findings":
 				opts.failOnFindings = enabled
+			default:
+				opts.mine = enabled
 			}
 			continue
 		}
