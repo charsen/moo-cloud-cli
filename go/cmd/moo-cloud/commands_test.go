@@ -329,6 +329,24 @@ func TestTodoListMineOption(t *testing.T) {
 	}
 }
 
+func TestTodoListAssigneeOption(t *testing.T) {
+	opts, err := parseTodoListOptions([]string{"--project=p", "--assignee=123"})
+	if err != nil || opts.assignee != "123" {
+		t.Fatalf("--assignee 未生效：%+v err=%v", opts, err)
+	}
+}
+
+func TestAuditMarkdownHasFixHints(t *testing.T) {
+	md := renderAuditMarkdown(
+		[]auditProject{{Project: "p", DoneWithoutNote: []auditItem{{ID: "x"}}}},
+		auditOptions{types: []string{"runtime"}, staleDays: 7},
+		time.Now(),
+	)
+	if !strings.Contains(md, "修复命令速查") || !strings.Contains(md, "moo-cloud todo done") {
+		t.Fatalf("审计报告缺少修复建议：\n%s", md)
+	}
+}
+
 func TestDshBlock(t *testing.T) {
 	out := dshBlock("/opt/bin/moo-cloud")
 	for _, want := range []string{"- insert:", "dsh-mcp-client", "serverName: moo-cloud", "/opt/bin/moo-cloud"} {

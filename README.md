@@ -530,6 +530,7 @@ MCP 中调用 `list_comments` / `post_comment`，参数为 `project`、`type`、
 # 列出待办（默认 open+in_progress；--status=done 查完成；--mine 只看指派给我）
 moo-cloud todo list --project=my-project --status=done --limit=20
 moo-cloud todo list --project=my-project --mine
+moo-cloud todo list --project=my-project --assignee=<人员ID>
 
 # 受理 / 完成并写回处理结果（done 必填 --note：根因/改动/分支 sha/验证）
 moo-cloud todo start --project=my-project --id=<ID> --note="已受理，开始排查"

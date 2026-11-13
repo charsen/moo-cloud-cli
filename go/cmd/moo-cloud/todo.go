@@ -128,6 +128,7 @@ list 选项:
   --limit=20 --offset=0  分页，limit 1–50
   --respect-scope     只列出「我在本项目处理范围」内的待办（默认按能力全集读）
   --mine              只看指派给我/我领取的待办（云端按 token 账号过滤 assignee）
+  --assignee=<id>     只列出指派给指定人员 ID 的待办（负责人视角）
 
 start/done 选项:
   --id=<TODO ID>      待办 ID（ULID）
@@ -487,9 +488,9 @@ func assigneeLabel(todo map[string]any) string {
 // ---------------------------------------------------------------- todo list
 
 type todoListOptions struct {
-	project, status, token, cloud string
-	limit, offset                 int
-	json, respectScope, mine      bool
+	project, status, assignee, token, cloud string
+	limit, offset                           int
+	json, respectScope, mine                bool
 }
 
 func runTodoList(args []string) int {
@@ -515,6 +516,10 @@ func runTodoList(args []string) int {
 	// 只看“指派给我/我领取”的待办（云端按 token 账号过滤 assignee）。
 	if opts.mine {
 		callArgs["mine"] = true
+	}
+	// 只看指派给指定人员 ID 的待办（负责人视角）。
+	if opts.assignee != "" {
+		callArgs["assignee_id"] = opts.assignee
 	}
 
 	data, err := mcpCall(cloud, token, "list_todos", callArgs)
@@ -575,6 +580,8 @@ func parseTodoListOptions(args []string) (todoListOptions, error) {
 			opts.project = value
 		case "status":
 			opts.status = value
+		case "assignee":
+			opts.assignee = value
 		case "token":
 			opts.token = value
 		case "cloud":

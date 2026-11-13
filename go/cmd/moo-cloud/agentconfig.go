@@ -179,7 +179,14 @@ func emitCodex(home, exe string, write, force bool) int {
 		return 0
 	}
 
-	file, raw, err := readClientConfig(filepath.Join(home, ".codex", "config.toml"))
+	origPath := filepath.Join(home, ".codex", "config.toml")
+	unlock, err := acquireConfigLock(origPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "获取配置锁失败：%v\n", err)
+		return 1
+	}
+	defer unlock()
+	file, raw, err := readClientConfig(origPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "读取配置失败：%v\n", err)
 		return 1
@@ -222,7 +229,14 @@ func emitWorkbuddy(home string, entry map[string]any, write, force bool) int {
 		return 0
 	}
 
-	file, raw, err := readClientConfig(filepath.Join(home, ".workbuddy", "mcp.json"))
+	origPath := filepath.Join(home, ".workbuddy", "mcp.json")
+	unlock, err := acquireConfigLock(origPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "获取配置锁失败：%v\n", err)
+		return 1
+	}
+	defer unlock()
+	file, raw, err := readClientConfig(origPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "读取配置失败：%v\n", err)
 		return 1
@@ -324,6 +338,24 @@ func (s fileStamp) changed(path string) bool {
 		return true
 	}
 	return now.size != s.size || !now.mod.Equal(s.mod)
+}
+
+// acquireConfigLock 串行化同一配置文件的读改写，避免多个 CLI 进程并发时互相覆盖。
+// 复用更新的 flock（进程退出自动释放）；短暂重试几秒，拿不到才报错。
+func acquireConfigLock(file string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		return nil, err
+	}
+	var unlock func()
+	var err error
+	for i := 0; i < 10; i++ {
+		unlock, err = acquireCLIUpdateLock(file + ".moo-cloud.lock")
+		if err == nil {
+			return unlock, nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return nil, err
 }
 
 func tomlString(value string) string {

@@ -428,7 +428,10 @@ func renderAuditMarkdown(reports []auditProject, opts auditOptions, now time.Tim
 		for _, typ := range opts.types {
 			fmt.Fprintf(&b, "- %s：%d\n", typ, r.IssueOpenCounts[typ])
 		}
-		b.WriteString("\n")
+		b.WriteString("\n### 修复命令速查\n\n")
+		fmt.Fprintf(&b, "- 补处理结果：`moo-cloud todo done --project=%s --id=<ID> --note=\"...\"`\n", r.Project)
+		fmt.Fprintf(&b, "- 领取/跟进：`moo-cloud todo start --project=%s --id=<ID>`\n", r.Project)
+		fmt.Fprintf(&b, "- 关闭异常：`moo-cloud issue resolve --project=%s --type=<type> --key=<key> --note=\"...\"`\n\n", r.Project)
 	}
 
 	return b.String()
