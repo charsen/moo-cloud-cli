@@ -1,6 +1,6 @@
 # 更新记录
 
-## Unreleased
+## 0.1.5 — 2026-11-13
 
 - 新增命令行业务闭环：`todo list` / `todo start` / `todo done` 与 `issue resolve`，脚本和 CI 可脱离 MCP 直接受理、完成、关闭并写回结果；写操作非交互需 `--yes`，仍受云端处理范围与策略（auto/confirm/hold）校验。
 - 新增只读 `audit` 命令：按项目扫描「已完成但无处理说明 / open 逾期 / in_progress 长期 / 疑似已修复未关闭」的待办与异常，输出 Markdown 或 JSON，不写云端、不改状态。
