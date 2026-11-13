@@ -419,6 +419,42 @@ func TestAuditSummaryOnlyCallsAuditSummaryOnly(t *testing.T) {
 	}
 }
 
+func TestTodoListReconciliationFilters(t *testing.T) {
+	opts, err := parseTodoListOptions([]string{
+		"--project=p", "--status=done", "--missing-note", "--done-by=alice",
+		"--created-after=2026-01-01", "--created-before=2026-12-31",
+		"--done-after=2026-02-01", "--done-before=2026-11-30",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.missingNote || opts.doneBy != "alice" || opts.createdAfter != "2026-01-01" || opts.doneBefore != "2026-11-30" {
+		t.Fatalf("解析有误：%+v", opts)
+	}
+	// 非法日期应拒绝
+	for _, bad := range [][]string{
+		{"--project=p", "--created-after=2026/01/01"},
+		{"--project=p", "--done-before=20260101"},
+	} {
+		if _, err := parseTodoListOptions(bad); err == nil {
+			t.Fatalf("非法日期应拒绝：%v", bad)
+		}
+	}
+}
+
+func TestTodoListSendsReconciliationArgs(t *testing.T) {
+	var captured map[string]any
+	server := mcpStub(t, func(name string, args map[string]any) map[string]any {
+		captured = args
+		return map[string]any{"todos": []any{}, "count": 0, "has_more": false}
+	})
+	defer server.Close()
+	code := runTodoList([]string{"--project=p", "--missing-note", "--done-by=alice", "--created-before=2026-12-31", "--token=fix", "--cloud=" + server.URL})
+	if code != 0 || captured["missing_note"] != true || captured["done_by"] != "alice" || captured["created_before"] != "2026-12-31" {
+		t.Fatalf("code=%d args=%+v", code, captured)
+	}
+}
+
 func TestDshBlock(t *testing.T) {
 	out := dshBlock("/opt/bin/moo-cloud")
 	for _, want := range []string{"- insert:", "dsh-mcp-client", "serverName: moo-cloud", "/opt/bin/moo-cloud"} {

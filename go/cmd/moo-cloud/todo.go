@@ -129,6 +129,10 @@ list 选项:
   --respect-scope     只列出「我在本项目处理范围」内的待办（默认按能力全集读）
   --mine              只看指派给我/我领取的待办（云端按 token 账号过滤 assignee）
   --assignee=<id>     只列出指派给指定人员 ID 的待办（负责人视角）
+  --missing-note      只列出 done_note 为空的待办（配合 --status=done 对账）
+  --done-by=<名字>    按完成人精确过滤
+  --created-after/-before=<YYYY-MM-DD>  按创建日期过滤
+  --done-after/-before=<YYYY-MM-DD>     按完成日期过滤
 
 start/done 选项:
   --id=<TODO ID>      待办 ID（ULID）
@@ -488,9 +492,10 @@ func assigneeLabel(todo map[string]any) string {
 // ---------------------------------------------------------------- todo list
 
 type todoListOptions struct {
-	project, status, assignee, token, cloud string
-	limit, offset                           int
-	json, respectScope, mine                bool
+	project, status, assignee, token, cloud                    string
+	doneBy, createdAfter, createdBefore, doneAfter, doneBefore string
+	limit, offset                                              int
+	json, respectScope, mine, missingNote                      bool
 }
 
 func runTodoList(args []string) int {
@@ -520,6 +525,21 @@ func runTodoList(args []string) int {
 	// 只看指派给指定人员 ID 的待办（负责人视角）。
 	if opts.assignee != "" {
 		callArgs["assignee_id"] = opts.assignee
+	}
+	// 对账筛选：缺说明 / 完成人 / 创建与完成日期区间。
+	if opts.missingNote {
+		callArgs["missing_note"] = true
+	}
+	if opts.doneBy != "" {
+		callArgs["done_by"] = opts.doneBy
+	}
+	for k, v := range map[string]string{
+		"created_after": opts.createdAfter, "created_before": opts.createdBefore,
+		"done_after": opts.doneAfter, "done_before": opts.doneBefore,
+	} {
+		if v != "" {
+			callArgs[k] = v
+		}
 	}
 
 	data, err := mcpCall(cloud, token, "list_todos", callArgs)
@@ -557,7 +577,7 @@ func parseTodoListOptions(args []string) (todoListOptions, error) {
 			return opts, fmt.Errorf("请使用 --选项=值")
 		}
 		key, value, hasValue := strings.Cut(arg[2:], "=")
-		if key == "json" || key == "respect-scope" || key == "mine" {
+		if key == "json" || key == "respect-scope" || key == "mine" || key == "missing-note" {
 			enabled, err := parseBoolFlag(key, value, hasValue)
 			if err != nil {
 				return opts, err
@@ -567,8 +587,10 @@ func parseTodoListOptions(args []string) (todoListOptions, error) {
 				opts.json = enabled
 			case "respect-scope":
 				opts.respectScope = enabled
-			default:
+			case "mine":
 				opts.mine = enabled
+			default:
+				opts.missingNote = enabled
 			}
 			continue
 		}
@@ -582,6 +604,16 @@ func parseTodoListOptions(args []string) (todoListOptions, error) {
 			opts.status = value
 		case "assignee":
 			opts.assignee = value
+		case "done-by":
+			opts.doneBy = value
+		case "created-after":
+			opts.createdAfter = value
+		case "created-before":
+			opts.createdBefore = value
+		case "done-after":
+			opts.doneAfter = value
+		case "done-before":
+			opts.doneBefore = value
 		case "token":
 			opts.token = value
 		case "cloud":
@@ -608,8 +640,29 @@ func parseTodoListOptions(args []string) (todoListOptions, error) {
 	if opts.status != "" && opts.status != "open" && opts.status != "in_progress" && opts.status != "done" {
 		return opts, fmt.Errorf("--status 只能是 open / in_progress / done")
 	}
+	for _, d := range []struct{ name, val string }{{"created-after", opts.createdAfter}, {"created-before", opts.createdBefore}, {"done-after", opts.doneAfter}, {"done-before", opts.doneBefore}} {
+		if d.val != "" && !isISODate(d.val) {
+			return opts, fmt.Errorf("--%s 需为 YYYY-MM-DD", d.name)
+		}
+	}
 
 	return opts, nil
+}
+
+// isISODate 校验 YYYY-MM-DD（与云端 whereDate 口径一致）。
+func isISODate(v string) bool {
+	if len(v) != 10 || v[4] != '-' || v[7] != '-' {
+		return false
+	}
+	for i, c := range v {
+		if i == 4 || i == 7 {
+			continue
+		}
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // ---------------------------------------------------------------- todo start / done

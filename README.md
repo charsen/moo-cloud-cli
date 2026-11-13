@@ -540,6 +540,8 @@ MCP 中调用 `list_comments` / `post_comment`，参数为 `project`、`type`、
 moo-cloud todo list --project=my-project --status=done --limit=20
 moo-cloud todo list --project=my-project --mine
 moo-cloud todo list --project=my-project --assignee=<人员ID>
+moo-cloud todo list --project=my-project --status=done --missing-note   # 对账：done 无处理说明
+moo-cloud todo list --project=my-project --created-before=2026-11-01 --done-by=alice
 
 # 受理 / 完成并写回处理结果（done 必填 --note：根因/改动/分支 sha/验证）
 moo-cloud todo start --project=my-project --id=<ID> --note="已受理，开始排查"
