@@ -289,6 +289,35 @@ func TestAppendClaimReminder(t *testing.T) {
 	}
 }
 
+func TestValidateCloudURL(t *testing.T) {
+	ok := map[string]string{
+		"https://c.mooeen.com":  "https://c.mooeen.com",
+		"https://c.mooeen.com/": "https://c.mooeen.com",
+		"http://localhost:8080": "http://localhost:8080",
+		"http://127.0.0.1:9000": "http://127.0.0.1:9000",
+	}
+	for in, want := range ok {
+		got, err := validateCloudURL(in)
+		if err != nil || got != want {
+			t.Fatalf("%q => %q,%v want %q", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"http://evil.com", "ftp://x", "c.mooeen.com", "https://"} {
+		if _, err := validateCloudURL(bad); err == nil {
+			t.Fatalf("应拒绝 %q", bad)
+		}
+	}
+	if got, err := validateCloudURL(""); err != nil || got != "" {
+		t.Fatalf("空值 => %q,%v", got, err)
+	}
+}
+
+func TestAuditJsonAndOutMutuallyExclusive(t *testing.T) {
+	if _, err := parseAuditOptions([]string{"--project=a", "--json", "--out=x.md"}); err == nil {
+		t.Fatal("--json 与 --out 应互斥报错")
+	}
+}
+
 func TestHelpListsAllSubcommands(t *testing.T) {
 	old := os.Stdout
 	r, w, err := os.Pipe()

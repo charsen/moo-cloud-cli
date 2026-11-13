@@ -230,9 +230,15 @@ func addTodo(opts todoOptions) (map[string]any, error) {
 		return nil, fmt.Errorf("缺少 token（--token / MOO_CLOUD_MCP_TOKEN / ~/.config/moo-fleet/mcp-token）")
 	}
 
-	cloud := strings.TrimRight(strings.TrimSpace(opts.cloud), "/")
+	cloud, err := validateCloudURL(opts.cloud)
+	if err != nil {
+		return nil, err
+	}
 	if cloud == "" {
-		cloud = strings.TrimRight(os.Getenv("MOO_CLOUD_URL"), "/")
+		cloud, err = validateCloudURL(os.Getenv("MOO_CLOUD_URL"))
+		if err != nil {
+			return nil, err
+		}
 	}
 	if cloud == "" {
 		cloud = "https://c.mooeen.com"
@@ -311,7 +317,7 @@ func addTodo(opts todoOptions) (map[string]any, error) {
 		args["images"] = images
 	}
 
-	preview, err := mcpCall(cloud, token, "create_todo", args)
+	preview, err := mcpCallNoRetry(cloud, token, "create_todo", args)
 	if err != nil {
 		return nil, err
 	}
@@ -349,7 +355,7 @@ func addTodo(opts todoOptions) (map[string]any, error) {
 
 	args["confirm_token"] = tokenValue
 
-	result, err := mcpCall(cloud, token, "create_todo", args)
+	result, err := mcpCallNoRetry(cloud, token, "create_todo", args)
 	if err != nil {
 		return nil, err
 	}
@@ -435,9 +441,15 @@ func resolveCloud(cloudFlag, tokenFlag string) (string, string, error) {
 	if token == "" {
 		return "", "", fmt.Errorf("缺少 token（--token / MOO_CLOUD_MCP_TOKEN / ~/.config/moo-fleet/mcp-token）")
 	}
-	cloud := strings.TrimRight(strings.TrimSpace(cloudFlag), "/")
+	cloud, err := validateCloudURL(cloudFlag)
+	if err != nil {
+		return "", "", err
+	}
 	if cloud == "" {
-		cloud = strings.TrimRight(os.Getenv("MOO_CLOUD_URL"), "/")
+		cloud, err = validateCloudURL(os.Getenv("MOO_CLOUD_URL"))
+		if err != nil {
+			return "", "", err
+		}
 	}
 	if cloud == "" {
 		cloud = "https://c.mooeen.com"
@@ -626,7 +638,7 @@ func runTodoUpdate(args []string, status string) int {
 		}
 	}
 
-	data, err := mcpCall(cloud, token, "update_todo_status", callArgs)
+	data, err := mcpCallNoRetry(cloud, token, "update_todo_status", callArgs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "更新待办失败："+err.Error())
 		return 1

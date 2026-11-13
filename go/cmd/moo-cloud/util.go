@@ -91,14 +91,22 @@ func initialToken() string {
 }
 
 func httpJSON(url string, payload any, headers map[string]string, timeout time.Duration) (int, []byte, error) {
+	return httpJSONN(url, payload, headers, timeout, 3)
+}
+
+// httpJSONN 可指定总尝试次数（attempts>=1）。写操作传 1（不重试），避免网络错误后重复提交。
+func httpJSONN(url string, payload any, headers map[string]string, timeout time.Duration, attempts int) (int, []byte, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return 0, nil, err
 	}
+	if attempts < 1 {
+		attempts = 1
+	}
 
 	// 只对网络错误 / 429 / 5xx 重试；4xx 是确定性错误，重试没有意义。
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
 			time.Sleep(time.Duration(attempt) * 300 * time.Millisecond)
 		}
@@ -138,12 +146,46 @@ func httpJSON(url string, payload any, headers map[string]string, timeout time.D
 	return 0, nil, lastErr
 }
 
+// validateCloudURL 只允许 https（localhost/127.0.0.1/::1 允许 http），避免 token 明文出网。
+// 空串返回空串（调用方再补默认 https 地址）。
+func validateCloudURL(raw string) (string, error) {
+	cloud := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if cloud == "" {
+		return "", nil
+	}
+	u, err := url.Parse(cloud)
+	if err != nil || u.Host == "" {
+		return "", fmt.Errorf("cloud 地址无效：%s", raw)
+	}
+	if u.Scheme == "https" {
+		return cloud, nil
+	}
+	if u.Scheme == "http" {
+		switch u.Hostname() {
+		case "localhost", "127.0.0.1", "::1":
+			return cloud, nil
+		}
+	}
+
+	return "", fmt.Errorf("cloud 必须使用 https（仅 localhost 允许 http）：%s", raw)
+}
+
 // mcpCall 调云端 tools/call，返回工具 JSON 文本解码后的对象。
 func mcpCall(cloud, token, tool string, args map[string]any) (map[string]any, error) {
-	status, body, err := httpJSON(cloud+"/api/v1/mcp", map[string]any{
+	return mcpCallN(cloud, token, tool, args, 3)
+}
+
+// mcpCallNoRetry 用于非幂等写操作（create_todo/post_comment/resolve_issue/update_todo_status），
+// 网络错误后不自动重试，避免重复创建或重复通知；由服务端去重兜底。
+func mcpCallNoRetry(cloud, token, tool string, args map[string]any) (map[string]any, error) {
+	return mcpCallN(cloud, token, tool, args, 1)
+}
+
+func mcpCallN(cloud, token, tool string, args map[string]any, attempts int) (map[string]any, error) {
+	status, body, err := httpJSONN(cloud+"/api/v1/mcp", map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
 		"params": map[string]any{"name": tool, "arguments": args},
-	}, map[string]string{"Authorization": "Bearer " + token}, 20*time.Second)
+	}, map[string]string{"Authorization": "Bearer " + token}, 20*time.Second, attempts)
 	if err != nil {
 		return nil, err
 	}

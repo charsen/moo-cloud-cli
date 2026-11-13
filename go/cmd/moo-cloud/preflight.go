@@ -342,7 +342,12 @@ func findMarkers(root string) []string {
 			}
 			entries, _ := os.ReadDir(directory)
 			for _, entry := range entries {
-				path := filepath.Join(directory, entry.Name())
+				name := entry.Name()
+				// 跳过依赖/版本库目录，避免大工作区里扫描无谓 I/O。
+				if name == "node_modules" || name == "vendor" || name == ".git" {
+					continue
+				}
+				path := filepath.Join(directory, name)
 				if info, err := os.Stat(path); err == nil && info.IsDir() {
 					next = append(next, path)
 				}
@@ -390,6 +395,15 @@ func inspectRepo(markerPath string, opts pfOptions) repoReport {
 		return report
 	}
 
+	// marker 的 root 只能是仓库内相对路径，禁止绝对路径或 .. 逃逸出仓库。
+	if data.Root != "" {
+		if filepath.IsAbs(data.Root) || strings.Contains(filepath.ToSlash(data.Root), "..") {
+			report.Warnings = append(report.Warnings, "marker root 不能是绝对路径或包含 ..："+data.Root)
+			report.HardFailures++
+
+			return report
+		}
+	}
 	appRoot := filepath.Join(repoRoot, data.Root)
 	if data.Root == "" {
 		appRoot = repoRoot
@@ -467,6 +481,12 @@ func inspectAppRepo(markerPath, repoRoot string, data markerFile, report repoRep
 			report.HardFailures++
 			continue
 		}
+		if info.Size() > 2<<20 {
+			// 指纹文件应是小文本；避免误指向大文件/二进制时 os.ReadFile 双份内存拖垮预检。
+			report.Warnings = append(report.Warnings, fmt.Sprintf("%s.file 超过 2MiB，拒绝读取：%s", field, rule.File))
+			report.HardFailures++
+			continue
+		}
 		raw, err := os.ReadFile(file)
 		if err != nil {
 			report.Warnings = append(report.Warnings, field+".file 读取失败，请检查文件权限："+rule.File)
@@ -530,8 +550,10 @@ func applyGitState(appRoot, repoRoot string, report *repoReport) {
 		report.HardFailures++
 	}
 
-	if _, branch := gitCmd(appRoot, "rev-parse", "--abbrev-ref", "HEAD"); branch != "" {
+	if code, branch := gitCmd(appRoot, "rev-parse", "--abbrev-ref", "HEAD"); code == 0 && branch != "" {
 		report.Branch = strPtr(branch)
+	} else {
+		report.Warnings = append(report.Warnings, "无法读取当前分支（git rev-parse 失败），脏工作区保护可能失效")
 	}
 
 	statusCode, status := gitCmd(appRoot, "status", "--porcelain")
@@ -556,6 +578,8 @@ func applyGitState(appRoot, repoRoot string, report *repoReport) {
 		if dirty > 0 {
 			report.Warnings = append(report.Warnings, fmt.Sprintf("工作区不干净（%d 个文件）：夜间任务应跳过该仓库，避免把别人的改动一起提交", dirty))
 		}
+	} else {
+		report.Warnings = append(report.Warnings, "git status 失败（仓库归属异常或 git 不可用），无法判断脏工作区")
 	}
 
 	branch := derefStr(report.Branch)
@@ -605,11 +629,17 @@ func inspectDeployment(appRoot, remote, project, envFile string, opts pfOptions)
 	cloud := opts.cloud
 	if cloud == "" {
 		cloud, _ = envValue(envPath, "MOO_MONITOR_CLOUD_URL")
-		if cloud == "" {
-			cloud = "https://c.mooeen.com"
-		}
 	}
-	cloud = strings.TrimRight(cloud, "/")
+	if cloud == "" {
+		cloud = "https://c.mooeen.com"
+	}
+	validatedCloud, verr := validateCloudURL(cloud)
+	if verr != nil {
+		entry.Errors = append(entry.Errors, verr.Error())
+
+		return entry
+	}
+	cloud = validatedCloud
 	entry.Cloud = cloud
 
 	if opts.offline {
@@ -668,7 +698,7 @@ func inspectDeployment(appRoot, remote, project, envFile string, opts pfOptions)
 
 func resolveFetchCloud(opts pfOptions, reports []repoReport) (string, error) {
 	if explicit := strings.TrimRight(opts.cloud, "/"); explicit != "" {
-		return explicit, nil
+		return validateCloudURL(explicit)
 	}
 
 	clouds := []string{}
@@ -687,9 +717,9 @@ func resolveFetchCloud(opts pfOptions, reports []repoReport) (string, error) {
 
 	switch len(clouds) {
 	case 0:
-		return "https://c.mooeen.com", nil
+		return validateCloudURL("https://c.mooeen.com")
 	case 1:
-		return clouds[0], nil
+		return validateCloudURL(clouds[0])
 	default:
 		return "", fmt.Errorf("部署指向多个云端（%s），请用 --cloud 指定拉取目标", strings.Join(clouds, "、"))
 	}
@@ -766,6 +796,8 @@ func fetchQueue(cloud string, opts pfOptions, projects []string) (map[string]map
 	concurrency := 4
 	if n, err := strconv.Atoi(opts.concurrency); err == nil {
 		concurrency = n
+	} else {
+		fmt.Fprintf(os.Stderr, "警告：--concurrency 不是数字（%s），使用默认 4\n", opts.concurrency)
 	}
 	if concurrency < 1 {
 		concurrency = 1
@@ -862,6 +894,26 @@ func fetchQueue(cloud string, opts pfOptions, projects []string) (map[string]map
 				successes++
 			}
 		}
+	}
+	// 任一“真正尝试过拉取”的项目若全类型失败，视为项目级硬失败（避免其它项目成功时被掩盖成退出 0）。
+	projectFailures := 0
+	for _, project := range metrics.Projects {
+		attempted, ok := 0, 0
+		for _, metric := range project.Types {
+			if metric.Skipped != "" {
+				continue
+			}
+			attempted++
+			if metric.Error == "" {
+				ok++
+			}
+		}
+		if attempted > 0 && ok == 0 {
+			projectFailures++
+		}
+	}
+	if projectFailures > 0 {
+		return queue, metrics, fmt.Errorf("有 %d 个项目全部类型拉取失败，详见队列与指标中的 error", projectFailures)
 	}
 	if failures > 0 && successes == 0 {
 		return queue, metrics, fmt.Errorf("所有尝试拉取的类型均失败（%d 项），详见队列与指标中的 error", failures)
@@ -1143,15 +1195,20 @@ func writeJSON(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	return writeFile(path, string(raw)+"\n")
+	// 队列/报告含业务数据；新建文件用 0600，避免共享机上他人可读。
+	return writeFileMode(path, string(raw)+"\n", 0o600)
 }
 
-// 同目录临时文件写完再替换，避免磁盘写失败时把旧配置/报告截断。
 func writeFile(path, content string) error {
+	return writeFileMode(path, content, 0o644)
+}
+
+// writeFileMode：同目录临时文件写完再替换，避免磁盘写失败时把旧文件截断；新建文件用 defaultMode，已存在则沿用原权限。
+func writeFileMode(path, content string, defaultMode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o775); err != nil {
 		return err
 	}
-	mode := os.FileMode(0o644)
+	mode := defaultMode
 	if info, err := os.Stat(path); err == nil {
 		mode = info.Mode().Perm()
 	}

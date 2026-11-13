@@ -572,6 +572,9 @@ func parseAuditOptions(args []string) (auditOptions, error) {
 			return opts, fmt.Errorf("未知参数 --%s", key)
 		}
 	}
+	if opts.json && opts.out != "" {
+		return opts, fmt.Errorf("--json 与 --out 不能同时使用（--json 输出到标准输出）")
+	}
 
 	return opts, nil
 }

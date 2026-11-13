@@ -437,7 +437,7 @@ moo-cloud todo add --project=my-project --title="补充回归用例" \
 - 非交互环境（脚本/AI）必须加 `--yes`，否则直接报错
 - 需要 `mcp:write`
 - 同项目、同标题且未完成（`open` / `in_progress`）时复用已有待办，返回 `deduped: true`；带图时追加新图，相同图片不重复保存
-- 支持 PNG/JPEG/WebP/GIF，最多 5 张图片（含已有图片），每张原始文件不超过 8 MiB、1600 万像素；图片保存在 cloud 的私有附件区
+- 支持 PNG/JPEG/WebP/GIF，最多 5 张图片（含已有图片），每张原始文件不超过 8 MiB（像素上限由云端校验）；图片保存在 cloud 的私有附件区
 - 图片无效或保存失败会报错，并回滚本次创建或补图；返回 `images_attached`（已处理的输入张数，含重复）、`images_added`（实际新增张数）和 `todo.attachments_count`
 - CLI 收不到完整图片保存回执时会报错；若错误带有待办 ID，先检查该记录附件，重试请保留相同标题与图片
 - 新待办默认 `ai_policy=auto`；`--assignee` 可填 `me`（默认）或项目成员邮箱
@@ -657,6 +657,8 @@ token 失效、被吊销或过期；重新生成。`--cloud` 指向的实例也�
 - host token 只从本地 `.env*` 读取，不打印、不写日志
 - 个人 MCP token 只读文件/环境变量；cloud 侧只存哈希
 - 不要把 token 提交进仓库、贴到聊天或日志
+- `--cloud`/`MOO_CLOUD_URL` 必须使用 **https**（仅 localhost 允许 http），避免 token 明文出网
+- 自更新校验下载文件 SHA-256，且主备发布源 `SHA256SUMS` 需一致；正式签名（公钥）校验需在发布流程额外配置（待办）
 - 写操作在服务端校验范围与策略，范围外返回 403
 
 ---

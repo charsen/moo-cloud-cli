@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -331,9 +332,18 @@ func cliChecksum(data []byte, name string) (string, error) {
 }
 
 func (u *cliUpdater) download(ctx context.Context, release cliRelease) ([]byte, error) {
-	name, _ := u.assetName()
-	asset, _ := release.asset(name)
-	sums, _ := release.asset("SHA256SUMS")
+	name, err := u.assetName()
+	if err != nil {
+		return nil, err
+	}
+	asset, err := release.asset(name)
+	if err != nil {
+		return nil, err
+	}
+	sums, err := release.asset("SHA256SUMS")
+	if err != nil {
+		return nil, err
+	}
 	data, err := u.get(ctx, sums.URL, 64<<10)
 	if err != nil {
 		return nil, err
@@ -375,12 +385,24 @@ func (u *cliUpdater) update(ctx context.Context, target string, confirmed bool) 
 	}
 	unlock, err := acquireCLIUpdateLock(path + ".update.lock")
 	if err != nil {
-		return nil, fmt.Errorf("无法取得更新锁（可能正在更新或目录不可写）：%w", err)
+		// 多客户端可能同时升级：短暂重试几秒，拿不到才报错，避免误报“无法更新”。
+		for i := 0; i < 10 && err != nil; i++ {
+			time.Sleep(200 * time.Millisecond)
+			unlock, err = acquireCLIUpdateLock(path + ".update.lock")
+		}
+		if err != nil {
+			return nil, fmt.Errorf("无法取得更新锁（可能正在更新或目录不可写）：%w", err)
+		}
 	}
 	defer unlock()
 	originalFile, err := os.Stat(path)
 	if err != nil {
 		return nil, err
+	}
+	// 保留原可执行权限，不要用一个固定 0755 抹掉用户设定的 0700 等语义。
+	perm := originalFile.Mode().Perm()
+	if perm == 0 {
+		perm = 0o755
 	}
 	// 三个客户端可能共用同一文件；锁外读取的版本不能作为最终写入依据。
 	lockedVersion, err := u.binaryVersion(ctx, path)
@@ -395,6 +417,10 @@ func (u *cliUpdater) update(ctx context.Context, target string, confirmed bool) 
 	latest, _ := cliSemver(release.Tag)
 	if latest != targetVersion {
 		return nil, fmt.Errorf("最新发布已变为 %s，请重新告知用户并确认", release.Tag)
+	}
+	// 主备源交叉校验：两源都可达时要求 SHA256SUMS 一致，一方被投毒即可被发现。
+	if err := u.crossCheckSums(ctx, release); err != nil {
+		return nil, err
 	}
 	// API 可达不代表附件 CDN 可达；为另一个源的同版本附件保留下载时间。
 	budget := 40 * time.Second
@@ -415,7 +441,13 @@ func (u *cliUpdater) update(ctx context.Context, target string, confirmed bool) 
 			if latest, _ := cliSemver(release.Tag); latest != targetVersion {
 				err = fmt.Errorf("备用源发布为 %s，与确认版本不同", release.Tag)
 			} else {
-				data, err = u.download(ctx, release)
+				fbBudget := 40 * time.Second
+				if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < fbBudget {
+					fbBudget = time.Until(deadline)
+				}
+				fbCtx, fbCancel := context.WithTimeout(ctx, fbBudget)
+				data, err = u.download(fbCtx, release)
+				fbCancel()
 			}
 		}
 		if err != nil {
@@ -438,7 +470,7 @@ func (u *cliUpdater) update(ctx context.Context, target string, confirmed bool) 
 	if writeErr != nil || syncErr != nil || closeErr != nil {
 		return nil, fmt.Errorf("写入更新文件失败：write=%v sync=%v close=%v", writeErr, syncErr, closeErr)
 	}
-	if err := os.Chmod(candidate.Name(), 0755); err != nil {
+	if err := os.Chmod(candidate.Name(), perm); err != nil {
 		return nil, err
 	}
 	actual, err := u.binaryVersion(ctx, candidate.Name())
@@ -475,7 +507,7 @@ func (u *cliUpdater) update(ctx context.Context, target string, confirmed bool) 
 	if copyErr != nil || syncErr != nil || closeErr != nil {
 		return nil, fmt.Errorf("备份原文件失败，取消更新")
 	}
-	if err := os.Chmod(backupPath, 0755); err != nil {
+	if err := os.Chmod(backupPath, perm); err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -489,5 +521,59 @@ func (u *cliUpdater) update(ctx context.Context, target string, confirmed bool) 
 		return nil, fmt.Errorf("替换失败，原文件保持不变；请关闭 MCP 后手动更新：%w", err)
 	}
 	keepBackup = true
+	pruneBackups(filepath.Dir(path), 3)
 	return map[string]any{"updated": true, "installed_version": actual, "previous_version": installed, "backup_path": backupPath, "restart_required": true, "message": "CLI 文件已更新。请重新连接 MCP 或重启客户端；当前连接继续使用旧进程。"}, nil
+}
+
+// crossCheckSums 在主备发布源都可达时要求 SHA256SUMS 内容一致，降低单一发布源被投毒的风险。
+// 若另一源不可达则跳过（无法交叉校验时保持原行为；正式签名校验仍需发布流程配置公钥）。
+func (u *cliUpdater) crossCheckSums(ctx context.Context, release cliRelease) error {
+	other := "gitee"
+	if release.Source == "gitee" {
+		other = "github"
+	}
+	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	alt, err := u.releaseFrom(cctx, other)
+	if err != nil {
+		return nil
+	}
+	a, err1 := release.asset("SHA256SUMS")
+	b, err2 := alt.asset("SHA256SUMS")
+	if err1 != nil || err2 != nil {
+		return nil
+	}
+	da, err := u.get(cctx, a.URL, 64<<10)
+	if err != nil {
+		return nil
+	}
+	db, err := u.get(cctx, b.URL, 64<<10)
+	if err != nil {
+		return nil
+	}
+	if sha256.Sum256(da) != sha256.Sum256(db) {
+		return fmt.Errorf("主备发布源 SHA256SUMS 不一致，拒绝更新（疑似投毒），请人工核对")
+	}
+	return nil
+}
+
+// pruneBackups 只保留最近 keep 份 .moo-cloud-backup-*，避免升级在安装目录堆积旧二进制。
+func pruneBackups(dir string, keep int) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	backups := []string{}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), ".moo-cloud-backup-") {
+			backups = append(backups, filepath.Join(dir, e.Name()))
+		}
+	}
+	if len(backups) <= keep {
+		return
+	}
+	sort.Slice(backups, func(i, j int) bool { return backups[i] > backups[j] })
+	for _, path := range backups[keep:] {
+		_ = os.Remove(path)
+	}
 }

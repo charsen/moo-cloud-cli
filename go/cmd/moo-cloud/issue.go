@@ -63,7 +63,7 @@ func runIssue(args []string) int {
 		}
 	}
 
-	data, err := mcpCall(cloud, token, "resolve_issue", callArgs)
+	data, err := mcpCallNoRetry(cloud, token, "resolve_issue", callArgs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "解决问题失败："+err.Error())
 		return 1

@@ -145,9 +145,15 @@ func callComment(action string, opts commentOptions) (map[string]any, error) {
 	if token == "" {
 		return nil, fmt.Errorf("缺少账号级 token")
 	}
-	cloud := opts.cloud
+	cloud, err := validateCloudURL(opts.cloud)
+	if err != nil {
+		return nil, err
+	}
 	if cloud == "" {
-		cloud = os.Getenv("MOO_CLOUD_URL")
+		cloud, err = validateCloudURL(os.Getenv("MOO_CLOUD_URL"))
+		if err != nil {
+			return nil, err
+		}
 	}
 	if cloud == "" {
 		cloud = "https://c.mooeen.com"
@@ -176,7 +182,13 @@ func callComment(action string, opts commentOptions) (map[string]any, error) {
 		args["limit"], _ = strconv.Atoi(opts.limit)
 		args["offset"], _ = strconv.Atoi(opts.offset)
 	}
-	data, err := mcpCall(strings.TrimRight(cloud, "/"), token, tool, args)
+	var data map[string]any
+	if tool == "post_comment" {
+		// 发表评论非幂等，网络错误不自动重试；服务端有 2 分钟去重兜底。
+		data, err = mcpCallNoRetry(cloud, token, tool, args)
+	} else {
+		data, err = mcpCall(cloud, token, tool, args)
+	}
 	if err != nil {
 		return nil, err
 	}

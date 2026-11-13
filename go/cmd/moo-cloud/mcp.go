@@ -64,7 +64,13 @@ func runMcpServer(args []string) int {
 	if cloud == "" {
 		cloud = "https://c.mooeen.com"
 	}
-	cloud = strings.TrimRight(cloud, "/")
+	validatedCloud, verr := validateCloudURL(cloud)
+	if verr != nil {
+		fmt.Fprintln(os.Stderr, "mcp-server: "+verr.Error())
+
+		return 1
+	}
+	cloud = validatedCloud
 
 	reader := bufio.NewReader(os.Stdin)
 	writer := bufio.NewWriter(os.Stdout)

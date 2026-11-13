@@ -154,8 +154,10 @@ func emitCodex(home, exe string, write, force bool) int {
 		fmt.Fprintf(os.Stderr, "读取配置失败：%v\n", err)
 		return 1
 	}
+	stamp := statStamp(file)
 	existing := string(raw)
-	if strings.Contains(existing, "[mcp_servers.moo_cloud]") {
+	// 用前缀匹配：合法 TOML 可能只有子表 [mcp_servers.moo_cloud.tools.x]，不能整串精确匹配。
+	if strings.Contains(existing, "[mcp_servers.moo_cloud") {
 		if !force {
 			fmt.Fprintln(os.Stderr, "已存在 [mcp_servers.moo_cloud]，未改动（--force 可覆盖）")
 
@@ -164,7 +166,12 @@ func emitCodex(home, exe string, write, force bool) int {
 		existing = stripCodexBlock(existing)
 	}
 
-	if err := backupFile(file); err != nil {
+	// 读→写之间若文件被其他进程/工具改动，拒绝用旧内容整体覆盖。
+	if stamp.changed(file) {
+		fmt.Fprintln(os.Stderr, "配置文件在读取后已被其他程序修改，已中止（请重试）")
+		return 1
+	}
+	if err := backupFileContent(file, raw); err != nil {
 		fmt.Fprintf(os.Stderr, "备份配置失败：%v\n", err)
 		return 1
 	}
@@ -190,6 +197,8 @@ func emitWorkbuddy(home string, entry map[string]any, write, force bool) int {
 		fmt.Fprintf(os.Stderr, "读取配置失败：%v\n", err)
 		return 1
 	}
+	stamp := statStamp(file)
+	origRaw := raw
 	root := map[string]json.RawMessage{}
 	if raw != nil {
 		if err := json.Unmarshal(raw, &root); err != nil || root == nil {
@@ -217,8 +226,12 @@ func emitWorkbuddy(home string, entry map[string]any, write, force bool) int {
 	serversRaw, _ := json.Marshal(servers)
 	root["mcpServers"] = serversRaw
 
-	if err := backupFile(file); err != nil {
+	if err := backupFileContent(file, origRaw); err != nil {
 		fmt.Fprintf(os.Stderr, "备份配置失败：%v\n", err)
+		return 1
+	}
+	if stamp.changed(file) {
+		fmt.Fprintln(os.Stderr, "配置文件在读取后已被其他程序修改，已中止（请重试）")
 		return 1
 	}
 	raw, _ = json.MarshalIndent(root, "", "    ")
@@ -248,15 +261,39 @@ func stripCodexBlock(toml string) string {
 	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
-func backupFile(file string) error {
-	raw, err := os.ReadFile(file)
-	if os.IsNotExist(err) {
+// backupFileContent 用“已读取到的原始字节”备份，避免二次读取拿到与合并依据不一致的内容。
+// raw == nil 表示文件原本不存在，无需备份。
+func backupFileContent(file string, raw []byte) error {
+	if raw == nil {
 		return nil
 	}
-	if err != nil {
-		return err
-	}
 	return os.WriteFile(file+".bak-"+time.Now().Format("20060102150405.000000000"), raw, 0o600)
+}
+
+// fileStamp 记录读取时的 size+mtime，写前比对，检测“读→写”之间是否被他人改动。
+type fileStamp struct {
+	size int64
+	mod  time.Time
+	ok   bool
+}
+
+func statStamp(path string) fileStamp {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fileStamp{}
+	}
+	return fileStamp{size: info.Size(), mod: info.ModTime(), ok: true}
+}
+
+func (s fileStamp) changed(path string) bool {
+	now := statStamp(path)
+	if !s.ok {
+		return now.ok // 读取时不存在、写入前出现 → 视为变化
+	}
+	if !now.ok {
+		return true
+	}
+	return now.size != s.size || !now.mod.Equal(s.mod)
 }
 
 func tomlString(value string) string {

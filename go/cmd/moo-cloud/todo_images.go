@@ -75,7 +75,7 @@ func todoImageToolDefinition(raw json.RawMessage) json.RawMessage {
 	}
 	properties["image_paths"] = map[string]any{
 		"type": "array", "maxItems": 5, "items": map[string]any{"type": "string"},
-		"description": "用户提供图片时请一并传入图片文件的绝对路径；最多 5 张，每张不超过 8 MiB、1600 万像素，支持 PNG/JPEG/WebP/GIF。本地桥读取并上传，两次确认调用须使用相同图片。与 images 二选一。拿不到原图时明确告知用户，不能声称图片已上传。",
+		"description": "用户提供图片时请一并传入图片文件的绝对路径；最多 5 张，每张不超过 8 MiB（像素上限由云端校验），支持 PNG/JPEG/WebP/GIF。本地桥读取并上传，两次确认调用须使用相同图片。与 images 二选一。拿不到原图时明确告知用户，不能声称图片已上传。",
 	}
 	tool["description"] = fmt.Sprint(tool["description"]) + " 本机可用 image_paths 上传用户附图，不需要手工编码 base64。"
 	encoded, _ := json.Marshal(tool)

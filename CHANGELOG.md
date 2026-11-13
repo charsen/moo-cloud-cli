@@ -8,6 +8,7 @@
 - `mcp-server` 初始化说明新增「开始处理先领取」提醒：受理（`status=in_progress`）记录领取状态与领取人（已有经办人保留），避免操作者未领取就静默处理；`todo start` 帮助同步说明。
 - `audit` 强化：`--fail-on-findings`（有违规退出码 2）、省略 `--project` 时从 `.moo-cloud.json` 自动取项目、命中 `--max-pages` 显式告警不静默截断；对支持新接口的 cloud，done 扫描走 `missing_note` 并可用 `audit_summary` 取汇总（旧 cloud 自动回退）。
 - 回执显示领取人：`todo list/start/done` 输出领取人（`assignee`），`issue resolve` 输出解决时间/解决人。
+- 安全与健壮性加固：`--cloud` 强制 https（仅 localhost 例外）防 token 明文；预检对「某项目全类型失败」与 `git status/branch` 失败计硬失败，marker `root` 拒绝越界，`verify.file` 限 2MiB；agent-config 读改写加 mtime/size 守卫并用同一份内容备份、Codex 前缀探测防重复 TOML；自更新保留原权限、主备源 `SHA256SUMS` 交叉校验、备份只留最近 3 份、取锁短暂重试；非幂等写（create_todo/post_comment/resolve/update）网络错误不自动重试；含业务数据的 JSON 报告新建为 0600。
 - 补充 MCP 待办直接受理、完成结果保存、幂等回执和查询说明；修正 `confirm` 策略允许受理的文档。配套 cloud 改动部署并重连后生效，无 CLI 二进制变更。
 
 ## 0.1.4 — 2026-11-13
