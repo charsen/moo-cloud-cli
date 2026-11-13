@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -215,5 +216,17 @@ func TestFetchPagesFollowsCursor(t *testing.T) {
 	rows, err := fetchPages("list_todos", map[string]any{"project": "p"}, server.URL, "fixture", 40)
 	if err != nil || len(rows) != 2 || calls != 2 {
 		t.Fatalf("rows=%d calls=%d err=%v", len(rows), calls, err)
+	}
+}
+
+func TestAppendClaimReminder(t *testing.T) {
+	out := appendClaimReminder("基础说明")
+	if !strings.Contains(out, "基础说明") {
+		t.Fatalf("原说明丢失：%q", out)
+	}
+	for _, want := range []string{"update_todo_status", "in_progress", "领取人"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("领取提醒缺少 %q：%q", want, out)
+		}
 	}
 }

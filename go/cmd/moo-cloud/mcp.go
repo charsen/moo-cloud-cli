@@ -13,6 +13,15 @@ import (
 	"time"
 )
 
+// claimReminder 追加到 MCP 初始化说明：要求操作者「开始处理即领取」，避免静默抢活。
+// 领取同时写入 in_progress 与领取人（由云端 update_todo_status 记录）。
+const claimReminder = "开始处理待办前，必须先调用 update_todo_status 将状态置为 in_progress 完成领取（同时记录领取状态与领取人），并在说明中写明领取人；处理并验证后再用 status=done 加 note 写回处理结果与验证。不要未领取就静默处理。"
+
+// appendClaimReminder 在云端给的 initialize 说明后追加「先领取」提醒，保留原文。
+func appendClaimReminder(instructions string) string {
+	return strings.TrimSpace(instructions + "\n" + claimReminder)
+}
+
 func runMcpServer(args []string) int {
 	if contains(args, "--help") || contains(args, "-h") {
 		fmt.Println("mcp-server：把云端 HTTP MCP 包成本地 stdio MCP\n\n用法: moo-cloud mcp-server [--token=...] [--cloud=...]")
@@ -267,7 +276,7 @@ func handleMcpLine(endpoint, token, line string, writer *bufio.Writer, updater *
 						updateNotice += " 当前 MCP 仍是旧进程，请重新连接 MCP。"
 					}
 				}
-				result["instructions"], _ = json.Marshal(strings.TrimSpace(instructions + "\n" + updateNotice))
+				result["instructions"], _ = json.Marshal(appendClaimReminder(instructions + "\n" + updateNotice))
 			} else {
 				var tools []json.RawMessage
 				if json.Unmarshal(result["tools"], &tools) == nil {

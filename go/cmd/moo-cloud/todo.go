@@ -134,6 +134,8 @@ start/done 选项:
   --yes               非交互确认（脚本/AI 必须显式加）
   --json              输出机器可读 JSON
 
+  说明：start 即领取——写入 in_progress 并记录领取人（已有经办人则保留），不要未领取就静默处理。
+
 例:
   moo-cloud todo add  --project=my-project --title="修复登录页报错"
   moo-cloud todo list --project=my-project --status=done --limit=20

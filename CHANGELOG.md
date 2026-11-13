@@ -5,6 +5,7 @@
 - 新增命令行业务闭环：`todo list` / `todo start` / `todo done` 与 `issue resolve`，脚本和 CI 可脱离 MCP 直接受理、完成、关闭并写回结果；写操作非交互需 `--yes`，仍受云端处理范围与策略（auto/confirm/hold）校验。
 - 新增只读 `audit` 命令：按项目扫描「已完成但无处理说明 / open 逾期 / in_progress 长期 / 疑似已修复未关闭」的待办与异常，输出 Markdown 或 JSON，不写云端、不改状态。
 - 明确「能力全集」与「个人处理范围」是两个正交维度：命令与审计默认按能力全集，只有 `--respect-scope` 才收窄到「我的处理范围」；`frontend_error` 为可勾选类别，账号未勾选属个人设置而非能力缺失。
+- `mcp-server` 初始化说明新增「开始处理先领取」提醒：受理（`status=in_progress`）记录领取状态与领取人（已有经办人保留），避免操作者未领取就静默处理；`todo start` 帮助同步说明。
 - 补充 MCP 待办直接受理、完成结果保存、幂等回执和查询说明；修正 `confirm` 策略允许受理的文档。配套 cloud 改动部署并重连后生效，无 CLI 二进制变更。
 
 ## 0.1.4 — 2026-11-13
