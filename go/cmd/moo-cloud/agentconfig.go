@@ -129,9 +129,11 @@ func yamlString(value string) string {
 }
 
 func codexBlock(exe string) string {
+	// 只读云端工具（与 cloud definitions 对齐）：自动批准，避免每次读都弹审批。
+	// 写工具（create_todo/resolve_issue/update_todo_status/post_comment）刻意不列入，保留人工审批。
 	readTools := []string{
 		"list_projects", "list_issues", "get_issue", "get_issue_markdown",
-		"list_apps", "list_todos", "get_todo", "get_todo_image",
+		"list_apps", "list_todos", "audit_summary", "get_todo", "get_todo_image",
 		"list_comments",
 	}
 	var b strings.Builder

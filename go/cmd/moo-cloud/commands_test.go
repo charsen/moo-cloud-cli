@@ -455,6 +455,21 @@ func TestTodoListSendsReconciliationArgs(t *testing.T) {
 	}
 }
 
+func TestCodexBlockReadToolsMatchCloud(t *testing.T) {
+	block := codexBlock("/bin/moo-cloud")
+	// 只读工具应齐全且含新增的 audit_summary；写工具不应出现在自动批准白名单里。
+	for _, tool := range []string{"list_projects", "list_issues", "get_issue", "get_issue_markdown", "list_apps", "list_todos", "audit_summary", "get_todo", "get_todo_image", "list_comments"} {
+		if !strings.Contains(block, "[mcp_servers.moo_cloud.tools."+tool+"]") {
+			t.Fatalf("codex 配置缺只读工具 %s", tool)
+		}
+	}
+	for _, tool := range []string{"create_todo", "resolve_issue", "update_todo_status", "post_comment"} {
+		if strings.Contains(block, "[mcp_servers.moo_cloud.tools."+tool+"]") {
+			t.Fatalf("写工具 %s 不应进入自动批准白名单", tool)
+		}
+	}
+}
+
 func TestDshBlock(t *testing.T) {
 	out := dshBlock("/opt/bin/moo-cloud")
 	for _, want := range []string{"- insert:", "dsh-mcp-client", "serverName: moo-cloud", "/opt/bin/moo-cloud"} {
