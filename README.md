@@ -1,6 +1,8 @@
 # moo-cloud-cli
 
-把本地代码仓库和云端的项目问题、待办连起来，并给 Codex / WorkBuddy / DeepSeek Harness 等 AI 客户端提供 MCP 工具。
+把本地代码仓库和云端项目连起来：查询异常和待办、附图建单、团队讨论、认领与完成回写，并给 Codex / WorkBuddy / DeepSeek Harness 等 AI 客户端提供 MCP 工具。
+
+当前版本 **0.1.4**，业务能力对齐 cloud **0.1.42**。更新内容见 [更新记录](CHANGELOG.md)。
 
 它解决三个具体问题：
 
@@ -19,7 +21,10 @@
 1. 从 [GitHub Releases](https://github.com/charsen/moo-cloud-cli/releases/latest) 或 [Gitee Releases](https://gitee.com/charsen/moo-cloud-cli/releases) 下载对应平台的文件；
 2. 改名为 `moo-cloud`（Windows 为 `moo-cloud.exe`），加执行权限；
 3. 把账号 token 存到 `~/.config/moo-fleet/mcp-token`；
-4. 在软件仓库或代码工作区执行 `moo-cloud preflight --offline`。
+4. 给 AI 使用时，执行 `moo-cloud agent-config --target=codex --write`（WorkBuddy 改用 `--target=workbuddy`），按第 8 节连接并调用 `list_projects`；
+5. 需要关联本地仓库时，再配置 `.moo-cloud.json` 并执行 `moo-cloud preflight --offline`。
+
+**只使用 MCP 不需要 `.moo-cloud.json`。** 它仅用于本地仓库预检，不负责连接或授权 MCP；DeepSeek Harness 的插件配置见第 8.3 节。
 
 下面按步骤展开。
 
@@ -47,7 +52,7 @@
 token 有两种权限：
 
 - `mcp:read`：只读，够拉取问题/待办；
-- `mcp:write`：可回写（解决/认领）；会自动包含读。
+- `mcp:write`：可创建待办、发表评论、解决异常和认领/完成待办；会自动包含读。范围与策略仍由 cloud 校验。
 
 第一次用建议先生成只读 token。
 
@@ -275,7 +280,7 @@ App 分支不使用 `root`；本地 `identifiers` 也不参与 CLI 解析，因�
 
 维护已有 App marker 时，删除未使用的 `root`、`identifiers` 即可，保留原 `project`、`product`、`platforms` 和 `verify`。包名指纹仍通过 `verify[].contains` 校验；Cloud 软件的可选包名资料无需删除。此精简不修改后端 marker 的 `root`、`deployments` 或 `env_file`。
 
-软件版本发布不由 marker 驱动。各仓保留自身 `docs/BUILD.md`，后台操作统一见 [Cloud 软件发版手册](../moo-scaffold-cloud/docs/RELEASE-PLAYBOOK.md)；不要向 marker 增加版本、文件、哈希、签名或发布 Token。
+软件版本与安装包在 Cloud 后台维护，各仓保留自身构建说明；marker 不负责发版，不要向其中增加版本、文件、哈希、签名或发布 Token。
 
 App marker 的 `project` 与 `product` 都必填。在线检查使用账号级 Token 调用 `list_apps`，确认软件属于该项目；通过后可独立拉取队列。`--offline` 仅检查本地指纹，不验证云端归属。
 
@@ -308,7 +313,7 @@ moo-cloud agent-config --target=json        # 只打印，给 Claude/Cursor 等
 
 ### 8.1 Codex
 
-1. 执行 `moo-cloud agent-config --target=codex --write`；
+1. 首次执行 `moo-cloud agent-config --target=codex --write`；已有配置需刷新只读工具白名单时加 `--force`；
 2. 完全退出 Codex 再打开；
 3. 验证：
 
@@ -351,7 +356,7 @@ DSH 通过 `@deepseek-ai/dsh-mcp-client` 插件加载，不使用 `mcp.json`。�
 
 注意：**新增插件必须放在 `- insert:` 里**；直接写 `- id:` 只会覆盖已有条目，不会加载新插件。
 
-保存后 DSH 会重载；工具会以 `mcp__moo-cloud__list_projects` 形式出现。
+保存插件配置后 DSH 会重载；工具会以 `mcp__moo-cloud__list_projects` 形式出现。只替换 CLI 文件不会让已经运行的 MCP 进程自动更新，安装新版后仍需重连插件或完全退出 DSH 后重开。
 
 DSH 会清掉子进程里匹配 `KEY|PASSWORD|SECRET|TOKEN` 的环境变量；桥默认读 token 文件，不受影响。
 
@@ -371,6 +376,8 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | moo
 ---
 
 ## 9. MCP 工具
+
+带 `mcp:write` 的账号通过本地桥可使用 15 个工具：下列 13 个云端工具及 2 个本机更新工具。只读 Token 不暴露云端写工具；本机更新仍需用户明确同意，不能借 Token 权限跳过确认。
 
 | 工具 | 用途 |
 |---|---|
@@ -456,7 +463,7 @@ MCP 连接初始化时自动检查发布版本，成功结果缓存 24 小时。
 发现新版后，AI 应先说明目标版本并询问是否安装。用户同意后才调用：
 
 ```json
-{"target_version":"0.1.2","confirm":true}
+{"target_version":"0.1.4","confirm":true}
 ```
 
 这里的版本号是示例，以检查返回的实际版本为准。`update_cli` 是本机写操作，不加入自动批准白名单；`confirm` 是客户端根据用户明确答复传入的确认参数，不能代替客户端的用户审批。检查新版不会自行触发更新。
@@ -466,6 +473,8 @@ MCP 连接初始化时自动检查发布版本，成功结果缓存 24 小时。
 发布信息或附件下载失败都会尝试备用源，备用源必须提供用户确认的同一版本。更新期间用系统锁防止多个客户端同时替换；进程异常结束后锁自动释放。如果期间被其他方式安装了新文件，本次更新会停止并要求重新检查。
 
 完成后**重新连接 MCP 或重启客户端**，已运行的进程继续使用旧版本。若 Windows 锁住正在运行的程序，或安装目录不可写，会保留原文件并提示手动更新；不会强行退出客户端。
+
+升级后请在每个客户端分别调用 `check_cli_update`，核对 `running_version`、`installed_version` 和 `restart_required`。终端的 `moo-cloud --version` 只说明磁盘文件已更新，不能证明 Codex、WorkBuddy 或 DSH 的旧连接已重启；新建对话也不一定重启客户端共用的 MCP 进程。WorkBuddy 可在 MCP 面板停用再启用 `moo-cloud`；其他客户端重连服务，或完全退出后重开。
 
 ### 9.3 查询与发表评论
 
