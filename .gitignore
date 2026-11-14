@@ -3,3 +3,4 @@
 moo-cloud-reports/
 /dist/
 go/moo-cloud
+go/cmd/moo-cloud/moo-cloud
