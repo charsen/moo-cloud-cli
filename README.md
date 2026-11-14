@@ -212,11 +212,11 @@ App 的项目、身份校验结果及失败原因会同时显示在 Markdown 和
 | `moo-cloud mcp-server` | 本地 stdio MCP 桥，给 AI 客户端用 |
 | `moo-cloud agent-config` | 生成/写入客户端的 MCP 配置 |
 | `moo-cloud todo add` | 记录一条云端待办（可选从问题生成） |
-| `moo-cloud todo list` | 列出待办，可按状态/分页/个人处理范围过滤 |
+| `moo-cloud todo list` | 列出待办，可按状态/分页/个人处理范围/对账筛选（missing-note、done-by、日期区间） |
 | `moo-cloud todo start` / `todo done` | 受理或完成待办并写回处理结果（done 必填 note） |
 | `moo-cloud issue list` | 列出异常（按类型/状态/分页/个人处理范围） |
 | `moo-cloud issue resolve` | 标记异常已解决（写根因/改动/分支 sha/验证） |
-| `moo-cloud audit` | 只读审计：done 无说明 / 逾期 open / 长期 in_progress / 疑似未关闭异常 |
+| `moo-cloud audit` | 只读审计：done 无说明 / 逾期 open / 长期 in_progress / 疑似未关闭异常；`--summary` 只取云端汇总 |
 | `moo-cloud comment list` | 分页查询某条异常或 TODO 的讨论 |
 | `moo-cloud comment add` | 发表文字评论，与网页讨论共用数据 |
 | `moo-cloud --version` | 查看版本 |
@@ -389,8 +389,9 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | moo
 1. **定位**：先 `list_projects` 拿项目清单、处理范围(handled_types)与策略(type_policies)；批量看健康度先 `audit_summary`。
 2. **读**：`list_issues --env` 取问题、`get_issue`/`get_issue_markdown` 看详情（markdown 省 token、已脱敏）；`list_todos --mine` 取我负责的待办、`get_todo` 看单条。
 3. **领取**：开始处理待办前先 `update_todo_status` 置 `in_progress`（记录领取人），**不要默默处理**。
-4. **写回**：修好并验证后 `update_todo_status` 置 `done` / `resolve_issue` 关闭异常；`note` 必填「根因+改动+分支 sha+验证」；以工具回执为准，**失败或超时不得宣称完成**。
-5. **策略**：待办 auto 可受理+完成、confirm 只能受理、hold 不处理；异常 auto 才可 resolve；范围外类别 403；评论属讨论（confirm/hold 也可评论）但仍需用户同意。
+4. **读图**：待办有截图时，对 `get_todo.attachments` 中每个 `ai_readable=true` 的附件逐张 `get_todo_image` 读全现场，别只看第一张。
+5. **写回**：修好并验证后 `update_todo_status` 置 `done` / `resolve_issue` 关闭异常；`note` 必填「根因+改动+分支 sha+验证」；以工具回执为准，**失败或超时不得宣称完成**。
+6. **策略**：待办 auto 可受理+完成、confirm 只能受理、hold 不处理；异常 auto 才可 resolve；范围外类别 403；评论属讨论（confirm/hold 也可评论）但仍需用户同意。
 
 | 工具 | 用途 |
 |---|---|
@@ -408,6 +409,18 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | moo
 | `create_todo` | 记录待办并附图（需 `mcp:write`） |
 | `resolve_issue` | 标记问题已解决（需 `mcp:write`） |
 | `update_todo_status` | 受理/完成待办并保存完成结果（需 `mcp:write`） |
+
+**按场景选命令（CLI 直连，不经 MCP 时）**：
+
+| 想做什么 | 命令 |
+|---|---|
+| 看某项目健康度总览 | `audit --project=x --summary` |
+| 找「有完成但没写说明」的待办 | `todo list --project=x --status=done --missing-note` |
+| 看我名下要处理的待办 | `todo list --project=x --mine` |
+| 看某类异常（按环境） | `issue list --project=x --type=runtime --env=production` |
+| 领取/完成待办并写回 | `todo start/done --project=x --id=<ULID> --note="…" --yes` |
+| 关闭已修复异常 | `issue resolve --project=x --type=… --key=<12位> --note="…" --yes` |
+| 本地多仓库预检+落盘 | `preflight --root=<ws> --fetch` |
 
 写操作校验项目权限、处理范围和策略：`auto` 待办可受理及完成，`confirm` 待办仅可受理，`hold` 不可处理；解决异常仍需对应策略许可；发表评论不受 ai_policy（auto/confirm/hold 均可），但仍受处理范围与 `mcp:write` 约束。客户端的写操作审批继续生效。
 

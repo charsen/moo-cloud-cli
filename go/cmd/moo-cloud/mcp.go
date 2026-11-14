@@ -13,9 +13,15 @@ import (
 	"time"
 )
 
-// claimReminder 追加到 MCP 初始化说明：要求操作者「开始处理即领取」，避免静默抢活。
-// 领取同时写入 in_progress 与领取人（由云端 update_todo_status 记录）。
-const claimReminder = "开始处理待办前，必须先调用 update_todo_status 将状态置为 in_progress 完成领取（同时记录领取状态与领取人），并在说明中写明领取人；处理并验证后再用 status=done 加 note 写回处理结果与验证。不要未领取就静默处理。"
+// claimReminder 追加到 MCP 初始化说明：本桥（CLI）侧的补充操作提醒。
+// 与云端 instructions 互补，只讲「容易忘、容易错」的点，不重复云端已列的流程细节。
+var claimReminder = strings.Join([]string{
+	"【本地桥补充提醒】",
+	"- 开始处理待办前先 update_todo_status 置 in_progress 完成「领取」（同时记录领取人与一句说明）；处理并验证后再置 done 写 note。不要未领取就静默处理。",
+	"- 只读排查先看 audit_summary / audit --summary 拿总览，再 list_issues / list_todos 深挖；待办可 mine=只看我负责。",
+	"- 待办有多张截图时，对 get_todo.attachments 中每个 ai_readable=true 的附件逐张 get_todo_image 读全现场，别只看第一张。",
+	"- 完成/解决一律以工具返回的 status/done_note/already_* 为准；写入失败或超时不得宣称已完成。",
+}, "\n")
 
 // appendClaimReminder 在云端给的 initialize 说明后追加「先领取」提醒，保留原文。
 func appendClaimReminder(instructions string) string {
