@@ -470,6 +470,29 @@ func TestCodexBlockReadToolsMatchCloud(t *testing.T) {
 	}
 }
 
+func TestAuditSummaryWritesOutFile(t *testing.T) {
+	server := mcpStub(t, func(name string, args map[string]any) map[string]any {
+		return map[string]any{
+			"project": args["project"],
+			"todos":   map[string]any{"done_without_note": 2, "open_stale": 1, "in_progress_long": 0},
+			"issues":  map[string]any{"runtime": map[string]any{"open": 3, "stale_open": 1}},
+		}
+	})
+	defer server.Close()
+	out := filepath.Join(t.TempDir(), "summary.md")
+	code := runAudit([]string{"--project=p", "--summary", "--out=" + out, "--token=fix", "--cloud=" + server.URL})
+	if code != 0 {
+		t.Fatalf("code=%d", code)
+	}
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("应写出 --out 文件：%v", err)
+	}
+	if !strings.Contains(string(raw), "done 无说明 2") {
+		t.Fatalf("汇总内容缺失：%s", raw)
+	}
+}
+
 func TestDshBlock(t *testing.T) {
 	out := dshBlock("/opt/bin/moo-cloud")
 	for _, want := range []string{"- insert:", "dsh-mcp-client", "serverName: moo-cloud", "/opt/bin/moo-cloud"} {
