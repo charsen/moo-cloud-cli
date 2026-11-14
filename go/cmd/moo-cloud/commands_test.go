@@ -455,6 +455,44 @@ func TestTodoListSendsReconciliationArgs(t *testing.T) {
 	}
 }
 
+func TestCodexBlockReadToolsMatchCloud(t *testing.T) {
+	block := codexBlock("/bin/moo-cloud")
+	// 只读工具应齐全且含新增的 audit_summary；写工具不应出现在自动批准白名单里。
+	for _, tool := range []string{"list_projects", "list_issues", "get_issue", "get_issue_markdown", "list_apps", "list_todos", "audit_summary", "get_todo", "get_todo_image", "list_comments"} {
+		if !strings.Contains(block, "[mcp_servers.moo_cloud.tools."+tool+"]") {
+			t.Fatalf("codex 配置缺只读工具 %s", tool)
+		}
+	}
+	for _, tool := range []string{"create_todo", "resolve_issue", "update_todo_status", "post_comment"} {
+		if strings.Contains(block, "[mcp_servers.moo_cloud.tools."+tool+"]") {
+			t.Fatalf("写工具 %s 不应进入自动批准白名单", tool)
+		}
+	}
+}
+
+func TestAuditSummaryWritesOutFile(t *testing.T) {
+	server := mcpStub(t, func(name string, args map[string]any) map[string]any {
+		return map[string]any{
+			"project": args["project"],
+			"todos":   map[string]any{"done_without_note": 2, "open_stale": 1, "in_progress_long": 0},
+			"issues":  map[string]any{"runtime": map[string]any{"open": 3, "stale_open": 1}},
+		}
+	})
+	defer server.Close()
+	out := filepath.Join(t.TempDir(), "summary.md")
+	code := runAudit([]string{"--project=p", "--summary", "--out=" + out, "--token=fix", "--cloud=" + server.URL})
+	if code != 0 {
+		t.Fatalf("code=%d", code)
+	}
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("应写出 --out 文件：%v", err)
+	}
+	if !strings.Contains(string(raw), "done 无说明 2") {
+		t.Fatalf("汇总内容缺失：%s", raw)
+	}
+}
+
 func TestDshBlock(t *testing.T) {
 	out := dshBlock("/opt/bin/moo-cloud")
 	for _, want := range []string{"- insert:", "dsh-mcp-client", "serverName: moo-cloud", "/opt/bin/moo-cloud"} {
