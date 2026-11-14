@@ -92,22 +92,45 @@ func runAuditSummaryOnly(cloud, token string, opts auditOptions) int {
 		}
 		return 0
 	}
-	for _, r := range rows {
-		todos, _ := r.Summary["todos"].(map[string]any)
-		fmt.Printf("%s：done 无说明 %v，open 逾期 %v，in_progress 长期 %v\n",
-			r.Project, todos["done_without_note"], todos["open_stale"], todos["in_progress_long"])
-		if issues, ok := r.Summary["issues"].(map[string]any); ok {
-			for _, typ := range opts.types {
-				if m, ok := issues[typ].(map[string]any); ok {
-					fmt.Printf("  %s：open %v（长期未再出现 %v）\n", typ, m["open"], m["stale_open"])
-				}
-			}
+	text := renderAuditSummaryText(rows, opts, now)
+	if opts.out != "" {
+		if err := os.MkdirAll(dirOf(opts.out), 0o775); err != nil {
+			fmt.Fprintln(os.Stderr, "创建目录失败："+err.Error())
+			return 1
 		}
+		if err := os.WriteFile(opts.out, []byte(text), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "写入汇总失败："+err.Error())
+			return 1
+		}
+		fmt.Printf("汇总已写入：%s\n", opts.out)
+	} else {
+		fmt.Print(text)
 	}
 	if hasError {
 		return 1
 	}
 	return 0
+}
+
+// renderAuditSummaryText 生成 --summary 的文本/Markdown 摘要（--out 与默认输出共用）。
+func renderAuditSummaryText(rows []auditProject, opts auditOptions, now time.Time) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# 审计汇总（--summary）\n\n")
+	fmt.Fprintf(&b, "- 生成时间：%s\n- 逾期阈值：%d 天\n- 范围：%s\n\n", now.Format("2006-01-02 15:04:05"), opts.staleDays, scopeLabel(opts.respectScope))
+	for _, r := range rows {
+		todos, _ := r.Summary["todos"].(map[string]any)
+		fmt.Fprintf(&b, "## %s\n\n", r.Project)
+		fmt.Fprintf(&b, "- 待办：done 无说明 %v，open 逾期 %v，in_progress 长期 %v\n", todos["done_without_note"], todos["open_stale"], todos["in_progress_long"])
+		if issues, ok := r.Summary["issues"].(map[string]any); ok {
+			for _, typ := range opts.types {
+				if m, ok := issues[typ].(map[string]any); ok {
+					fmt.Fprintf(&b, "- %s：open %v（长期未再出现 %v）\n", typ, m["open"], m["stale_open"])
+				}
+			}
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 func runAudit(args []string) int {
