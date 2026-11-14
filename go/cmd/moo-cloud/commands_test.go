@@ -314,7 +314,7 @@ func TestAppendClaimReminder(t *testing.T) {
 	if !strings.Contains(out, "基础说明") {
 		t.Fatalf("原说明丢失：%q", out)
 	}
-	for _, want := range []string{"update_todo_status", "in_progress", "领取人"} {
+	for _, want := range []string{"update_todo_status", "in_progress", "领取人", "audit_summary", "ai_readable=true", "逐张"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("领取提醒缺少 %q：%q", want, out)
 		}

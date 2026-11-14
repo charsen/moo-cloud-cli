@@ -1,5 +1,15 @@
 # 更新记录
 
+## Unreleased
+
+- `issue list`：按类型/状态/分页/个人范围列出异常，新增 `--env` 按环境过滤（对齐云端 `list_issues`）。
+- `audit`：新增 `--mine`（待办统计只看我负责的）、`--summary`（只取云端 `audit_summary` 汇总、支持 `--out`）；修复 `--summary --out` 被忽略；`--json` 与 `--out` 互斥。
+- `todo list`：补齐云端对账筛选 `--missing-note` / `--done-by` / `--created-after|before` / `--done-after|before`（`YYYY-MM-DD`）。
+- `agent-config`：Codex 只读工具白名单补齐 `audit_summary`（与云端 14 工具对齐，写工具不进自动批准）。
+- `mcp-server`：初始化 Agent 提醒扩展（先领取、先看 audit_summary、多图逐张读、以回执为准）；`get_todo_image` 引导读全多图。
+- 文档：命令一览/按场景速查/`preflight` 与 `audit` 分工；工具数与测试数以实际为准（随 cloud/迭代变化）。
+- 构建/仓库：`.gitignore` 忽略子目录构建产物。
+
 ## 0.1.5 — 2026-11-13
 
 - 新增命令行业务闭环：`todo list` / `todo start` / `todo done` 与 `issue resolve`，脚本和 CI 可脱离 MCP 直接受理、完成、关闭并写回结果；写操作非交互需 `--yes`，仍受云端处理范围与策略（auto/confirm/hold）校验。
