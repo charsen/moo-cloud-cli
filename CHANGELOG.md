@@ -1,6 +1,6 @@
 # 更新记录
 
-## Unreleased
+## 0.1.6 — 2026-11-14
 
 - `issue list`：按类型/状态/分页/个人范围列出异常，新增 `--env` 按环境过滤（对齐云端 `list_issues`）。
 - `audit`：新增 `--mine`（待办统计只看我负责的）、`--summary`（只取云端 `audit_summary` 汇总、支持 `--out`）；修复 `--summary --out` 被忽略；`--json` 与 `--out` 互斥。
