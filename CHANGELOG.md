@@ -1,5 +1,9 @@
 # 更新记录
 
+## Unreleased
+
+- 文档：说明 `get_issue` / `get_issue_markdown` / `get_todo` 返回的 markdown 末尾会附团队讨论最近 20 条（时间正序、正文脱敏）；更早的评论用 `list_comments` 分页读取。
+
 ## 0.1.6 — 2026-11-14
 
 - `issue list`：按类型/状态/分页/个人范围列出异常，新增 `--env` 按环境过滤（对齐云端 `list_issues`）。
