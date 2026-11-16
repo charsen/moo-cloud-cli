@@ -387,7 +387,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | moo
 **给 Agent 的操作规范**（`mcp-server` 在 MCP 初始化时随 `instructions` 下发的要点，详见 cloud 版本文档）：
 
 1. **定位**：先 `list_projects` 拿项目清单、处理范围(handled_types)与策略(type_policies)；批量看健康度先 `audit_summary`。
-2. **读**：`list_issues --env` 取问题、`get_issue`/`get_issue_markdown` 看详情（markdown 省 token、已脱敏）；`list_todos --mine` 取我负责的待办、`get_todo` 看单条。
+2. **读**：`list_issues --env` 取问题、`get_issue`/`get_issue_markdown` 看详情（markdown 省 token、已脱敏，末尾附团队讨论最近 20 条，更早用 `list_comments` 翻页）；`list_todos --mine` 取我负责的待办、`get_todo` 看单条（markdown 同样附最近 20 条讨论）。
 3. **领取**：开始处理待办前先 `update_todo_status` 置 `in_progress`（记录领取人），**不要默默处理**。
 4. **读图**：待办有截图时，对 `get_todo.attachments` 中每个 `ai_readable=true` 的附件逐张 `get_todo_image` 读全现场，别只看第一张。
 5. **写回**：修好并验证后 `update_todo_status` 置 `done` / `resolve_issue` 关闭异常；`note` 必填「根因+改动+分支 sha+验证」；以工具回执为准，**失败或超时不得宣称完成**。
@@ -397,12 +397,12 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | moo
 |---|---|
 | `list_projects` | 项目清单、待处理计数、有效处理范围、策略 |
 | `list_issues` | 按项目/类型列问题（可按 env 过滤） |
-| `get_issue` | 单条问题完整上下文（可选 payload） |
-| `get_issue_markdown` | 单条问题的 AI markdown |
+| `get_issue` | 单条问题完整上下文（可选 payload；markdown 末尾附团队讨论最近 20 条） |
+| `get_issue_markdown` | 单条问题的 AI markdown（末尾附团队讨论最近 20 条） |
 | `list_apps` | 项目下的软件（AppProduct） |
 | `list_todos` | 待办列表（支持 missing_note/done_by/时间区间筛选） |
 | `audit_summary` | 只读对账汇总：done 无说明 / 逾期 / 长期 / 异常未关闭计数 |
-| `get_todo` | 待办详情（含附件） |
+| `get_todo` | 待办详情（含附件；markdown 末尾附团队讨论最近 20 条） |
 | `get_todo_image` | 读取待办图片 |
 | `list_comments` | 分页查询异常或 TODO 的团队讨论 |
 | `post_comment` | 发表文字评论（需 `mcp:write`，先取得用户同意） |
@@ -543,6 +543,8 @@ moo-cloud comment add --project=my-project --type=runtime --key=abcdef123456 --b
 发表文字需 `mcp:write`、有效处理范围（评论不受 ai_policy，confirm/hold 待办也可评论），正文为 1–5000 字。命令会询问确认；自动化调用需先获用户同意，再加 `--yes`。同账号、同记录、相同正文在 2 分钟内复用已有评论，避免重试重复评论或通知。已完成/已解决记录仍可讨论，不改变状态；删除或无权访问的记录不可操作。
 
 MCP 中调用 `list_comments` / `post_comment`，参数为 `project`、`type`、`key` 或 `id`，发表时再传 `body`。写评论不加入自动批准白名单；本次只支持文字发表。cloud 部署评论工具后重连 MCP 获取新工具定义；本地 `comment` 命令需使用包含本轮功能的 CLI。
+
+另外，`get_issue` / `get_issue_markdown` / `get_todo` 返回的 markdown 末尾已附团队讨论最近 20 条（时间正序、正文脱敏）；需要全部或更早的评论时再用 `list_comments` 翻页查看。
 
 ### 9.5 命令行闭环与审计
 
