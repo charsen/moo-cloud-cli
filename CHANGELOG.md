@@ -1,6 +1,6 @@
 # 更新记录
 
-## Unreleased
+## 0.1.7 — 2026-11-17
 
 - create_todo 图片改为七牛直传：本地桥/CLI 先申请 `create_todo_image_tickets` 票据并直传七牛，再以 `image_upload_ids` 创建待办；旧 `images`/`image_paths` base64 通道保留过渡。
 
