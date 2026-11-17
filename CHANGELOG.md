@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- create_todo 图片改为七牛直传：本地桥/CLI 先申请 `create_todo_image_tickets` 票据并直传七牛，再以 `image_upload_ids` 创建待办；旧 `images`/`image_paths` base64 通道保留过渡。
+
 - 文档：说明 `get_issue` / `get_issue_markdown` / `get_todo` 返回的 markdown 末尾会附团队讨论最近 20 条（时间正序、正文脱敏）；更早的评论用 `list_comments` 分页读取。
 
 ## 0.1.6 — 2026-11-14
