@@ -315,12 +315,21 @@ func addTodo(opts todoOptions) (map[string]any, error) {
 		args["source"] = source
 	}
 
-	images, err := loadTodoImages(opts.images, false)
-	if err != nil {
-		return nil, err
-	}
-	if len(images) > 0 {
-		args["images"] = images
+	// 图片默认走七牛直传（cloud 不中转）；云端不支持/未配置七牛时 auto 模式回退旧 base64。
+	if len(opts.images) > 0 {
+		files, err := loadTodoImageFiles(opts.images, false)
+		if err != nil {
+			return nil, err
+		}
+		state, err := chooseTodoImageState(cloud+"/api/v1/mcp", token, opts.project, files)
+		if err != nil {
+			return nil, err
+		}
+		if state.mode == todoImageModeDirect {
+			args["image_upload_ids"] = state.uploadIDs
+		} else {
+			args["images"] = todoImagesBase64(files)
+		}
 	}
 
 	// 预览调用只读、幂等，可安全重试；仅“确认写入”那次不重试，避免重复创建。
@@ -366,7 +375,7 @@ func addTodo(opts todoOptions) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := verifyTodoImages(result, len(images)); err != nil {
+	if err := verifyTodoImages(result, len(opts.images)); err != nil {
 		return nil, err
 	}
 	return result, nil

@@ -94,6 +94,7 @@ func todoImageReply(w http.ResponseWriter, id any, data map[string]any, isError 
 }
 
 func TestTodoImageBridgeUploadsAndPreservesConfirmation(t *testing.T) {
+	t.Setenv("MOO_CLOUD_TODO_IMAGE_MODE", todoImageModeLegacy)
 	path, expected := todoTestImage(t)
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -212,6 +213,7 @@ func TestTodoImageSchemaOnEveryToolPage(t *testing.T) {
 }
 
 func TestAddTodoWithImages(t *testing.T) {
+	t.Setenv("MOO_CLOUD_TODO_IMAGE_MODE", todoImageModeLegacy)
 	path, expected := todoTestImage(t)
 	for _, receipt := range []bool{true, false} {
 		t.Run(map[bool]string{true: "saved", false: "missing-receipt"}[receipt], func(t *testing.T) {
@@ -257,6 +259,7 @@ func TestAddTodoWithImages(t *testing.T) {
 }
 
 func TestTodoImageBridgePreservesErrorsAndRejectsMalformedReceipt(t *testing.T) {
+	t.Setenv("MOO_CLOUD_TODO_IMAGE_MODE", todoImageModeLegacy)
 	path, _ := todoTestImage(t)
 	for _, mode := range []string{"tool-error", "rpc-error", "malformed-result"} {
 		t.Run(mode, func(t *testing.T) {
