@@ -28,6 +28,22 @@ CLI 更新源为 GitHub Release，访问失败时尝试 Gitee。附图功能还�
 - 测试用例数随迭代增长（0.1.4 时期为 85 项）；请以本机 `go test ./...` 实际结果为准，历史构建记录中的数字仅代表当次发布。当前 CLI 顶层测试通过、含 race 检查；WorkBuddy 隔离项目完成 63 次实际工具调用，正式更新检查连续两次复测通过。详细范围及历史构建记录见下文。
 - 2026-11-12 发布时未执行真实 Agent 聊天附图上传；2026-11-13 已补充 WorkBuddy 桌面本地隔离验收，见下文。本次仍未部署 cloud，不能将源码发布或本地验收视为线上功能已生效。
 
+## 最近构建 · 0.1.9（2026-11-18）
+
+源码提交：`3736405`（干净工作区，六个平台均为 `vcs.modified=false`）；Go 1.27.4，`CGO_ENABLED=0`，`make -C go dist VERSION=0.1.9`。本页构建记录在构建之后单独提交（仅文档变化），标签指向含本记录的提交。
+
+| 文件（位于 `dist/`） | 字节大小 | SHA-256 |
+| --- | ---: | --- |
+| `moo-cloud-darwin-amd64` | 7654768 | `819cb6a4a3ca5ddbe9c38a07440bd5866c8168ae5a4c5009dc36f17a501cda8a` |
+| `moo-cloud-darwin-arm64` | 7061986 | `3f32caccbf697d8bc6b9b8dde0a4cd5a0ba77349ef98267bfa5d8dbf5b149f59` |
+| `moo-cloud-linux-amd64` | 7504032 | `e276962ee91608995932bb7ed9d1b3c851eb58ff5122985e67ce2564782ae3a4` |
+| `moo-cloud-linux-arm64` | 6881440 | `8adbc992179fc88f02a9c50cd843d98aa57fdf120ddec75a35b5a4d4e6a0f89b` |
+| `moo-cloud-windows-amd64.exe` | 7725568 | `1889369d77084133cc3647eea32ace324b2eb8aad907dd8fff17e162c9b668e4` |
+| `moo-cloud-windows-arm64.exe` | 6990848 | `aa9f629f9fe12fa9b17567d73ebf57ab717b5e873cd2684c7ecb2ec995f8e566` |
+
+- 本次变更：新增 `todo add --batch` 批量建单、`todo show` 单条详情与图文核对；修复 `ModeCharDevice` 误判终端的缺陷（改用 ioctl/GetConsoleMode，`stdinIsTerminal()` 覆盖 5 处写入口）；MCP 引导说明由 4 条扩为 8 条。
+- 本表数据取自 `dist/BUILD-0.1.9.json`，与 `SHA256SUMS` 逐条一致；macOS arm64 执行 `--version` 返回 `moo-cloud 0.1.9`；Go 链接器 ad-hoc 签名，未 Developer ID 签名或公证；其他平台未执行目标机启动验证。
+
 ## 最近构建 · 0.1.8（2026-11-18）
 
 源码提交：`074e61f`（干净工作区，六个平台均为 `vcs.modified=false`，`go version -m` 回读确认 `vcs.revision=074e61fd421ee314535bbfac91a10285e5c114f8`）；Go 1.27.4，`CGO_ENABLED=0`，`make -C go dist VERSION=0.1.8`。标签 `0.1.8`。
