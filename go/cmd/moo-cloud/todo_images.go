@@ -19,22 +19,24 @@ import (
 
 const maxTodoImageBytes = 8 * 1024 * 1024
 
-// 待办图片上传模式：默认 auto（先试七牛直传，云端不支持/未配置时回退旧 base64）。
+// 待办图片上传模式：默认 direct（严格直传；auto 仅显式开启，legacy 仅兼容旧 cloud）。
 const (
 	todoImageModeAuto   = "auto"
 	todoImageModeDirect = "direct"
 	todoImageModeLegacy = "legacy"
 )
 
-// todoImageMode 从环境变量读取；未设置或非法值按 auto 处理。
+// todoImageMode 从环境变量读取；未设置或非法值按 direct 处理（严格直传）。
 func todoImageMode() string {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("MOO_CLOUD_TODO_IMAGE_MODE"))) {
+	case todoImageModeAuto:
+		return todoImageModeAuto
 	case todoImageModeDirect:
 		return todoImageModeDirect
 	case todoImageModeLegacy:
 		return todoImageModeLegacy
 	default:
-		return todoImageModeAuto
+		return todoImageModeDirect
 	}
 }
 
@@ -195,10 +197,27 @@ func uploadTodoImageToQiniu(ticket qiniuTicket, file todoImageFile) error {
 		return fmt.Errorf("七牛上传失败：%w", err)
 	}
 	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-
 		return fmt.Errorf("七牛上传失败（HTTP %d）：%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	// 七牛可能 HTTP 200 仍返回 error；必须解析响应，避免把失败当成功。
+	var result struct {
+		Key   string `json:"key"`
+		Hash  string `json:"hash"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return fmt.Errorf("七牛响应不是合法 JSON：%s", strings.TrimSpace(string(body)))
+	}
+	if result.Error != "" {
+		return fmt.Errorf("七牛上传失败：%s", result.Error)
+	}
+	if result.Key == "" {
+		return fmt.Errorf("七牛响应缺少 key")
+	}
+	if ticket.Key != "" && result.Key != ticket.Key {
+		return fmt.Errorf("七牛返回 key 不一致：want %s got %s", ticket.Key, result.Key)
 	}
 
 	return nil

@@ -91,12 +91,14 @@ type qiniuFake struct {
 	tokens    []string
 	sizes     []int
 	fail      bool
+	bodyError bool
 }
 
 func (q *qiniuFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	q.mu.Lock()
 	q.requested++
 	fail := q.fail
+	bodyError := q.bodyError
 	q.mu.Unlock()
 	if fail {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -114,12 +116,17 @@ func (q *qiniuFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		file.Close()
 	}
 	q.mu.Lock()
-	q.keys = append(q.keys, r.FormValue("key"))
+	key := r.FormValue("key")
+	q.keys = append(q.keys, key)
 	q.tokens = append(q.tokens, r.FormValue("token"))
 	q.sizes = append(q.sizes, size)
 	q.mu.Unlock()
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"key":"ok"}`))
+	if bodyError {
+		_, _ = w.Write([]byte(`{"error":"bad token"}`))
+		return
+	}
+	fmt.Fprintf(w, "{\"key\":\"%s\",\"hash\":\"fake\"}", key)
 }
 
 func todoDirectSetup(t *testing.T, mcp *todoDirectMCP, qiniu *qiniuFake) *httptest.Server {
@@ -135,6 +142,30 @@ func todoDirectSetup(t *testing.T, mcp *todoDirectMCP, qiniu *qiniuFake) *httpte
 	})
 
 	return msrv
+}
+
+func TestDefaultTodoImageModeIsDirect(t *testing.T) {
+	t.Setenv("MOO_CLOUD_TODO_IMAGE_MODE", "")
+	if got := todoImageMode(); got != todoImageModeDirect {
+		t.Fatalf("默认图片模式应为 direct，实际 %s", got)
+	}
+}
+
+func TestQiniuHTTP200ErrorIsRejected(t *testing.T) {
+	t.Setenv("MOO_CLOUD_TODO_IMAGE_MODE", todoImageModeDirect)
+	path, _ := todoTestImage(t)
+	mcp := &todoDirectMCP{}
+	qiniu := &qiniuFake{bodyError: true}
+	msrv := todoDirectSetup(t, mcp, qiniu)
+
+	opts, _ := parseTodoOptions([]string{"--project=p", "--title=七牛错误", "--image=" + path, "--yes"})
+	opts.token, opts.cloud = "test-token", msrv.URL
+	if _, err := addTodo(opts); err == nil {
+		t.Fatal("七牛 HTTP 200 + error 必须报错，不能当成功")
+	}
+	if len(mcp.createCalls) != 0 {
+		t.Fatalf("七牛错误后不应创建待办，实际 %d", len(mcp.createCalls))
+	}
 }
 
 func TestAddTodoDirectUploadsAndSendsUploadIDs(t *testing.T) {

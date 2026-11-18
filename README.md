@@ -479,6 +479,8 @@ Agent 通过本地 MCP 桥创建待办时，用 `image_paths` 传入截图的**�
 
 首次调用返回项目预览与 `confirm_token`；确认后第二次调用保留相同参数和图片，再加上该令牌。默认走直传：CLI 先申请 `create_todo_image_tickets` 票据，把文件 multipart 直传七牛，再把 `upload_id` 放进 `image_upload_ids`；旧 `images` 数组 base64 仅在 `MCP_TODO_IMAGES_LEGACY=true` 时兼容。
 
+图片上传模式由 `MOO_CLOUD_TODO_IMAGE_MODE` 控制：默认 `direct`（只直传，失败直接报错）；`auto` 仅在云端不支持/未配置七牛时回退旧 base64；`legacy` 仅用于兼容旧 cloud。生产 cloud 已关闭旧通道，建议所有客户端保持默认 `direct`。
+
 聊天附件不会自动进入工具参数。Agent 应把用户附图一起传入；如果客户端未提供可读的原图文件，应明确说明图片尚未上传。需要同时使用支持附图的 cloud 和 CLI，更新后重新连接 MCP 才会刷新工具参数。
 
 ### 9.2 受理待办与写回完成结果

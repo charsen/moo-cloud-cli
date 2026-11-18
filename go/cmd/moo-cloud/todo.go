@@ -315,7 +315,7 @@ func addTodo(opts todoOptions) (map[string]any, error) {
 		args["source"] = source
 	}
 
-	// 图片默认走七牛直传（cloud 不中转）；云端不支持/未配置七牛时 auto 模式回退旧 base64。
+	// 图片默认只走七牛直传（cloud 不中转）；auto 仅在显式设置时允许回退旧 base64。
 	if len(opts.images) > 0 {
 		files, err := loadTodoImageFiles(opts.images, false)
 		if err != nil {
