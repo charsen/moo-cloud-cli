@@ -30,9 +30,13 @@ func todoTestImage(t *testing.T) (string, string) {
 
 func TestTodoImageFilesValidation(t *testing.T) {
 	path, expected := todoTestImage(t)
-	images, err := loadTodoImages([]string{path, path}, true)
-	if err != nil || len(images) != 2 || images[0] != expected || images[1] != expected {
+	files, err := loadTodoImageFiles([]string{path, path}, true)
+	if err != nil {
 		t.Fatalf("文件读取错误：%v", err)
+	}
+	images := todoImagesBase64(files)
+	if len(images) != 2 || images[0] != expected || images[1] != expected {
+		t.Fatalf("base64 编码错误：%v", images)
 	}
 	bad := filepath.Join(t.TempDir(), "fake.png")
 	if err := os.WriteFile(bad, []byte("<svg/>"), 0600); err != nil {
@@ -54,7 +58,7 @@ func TestTodoImageFilesValidation(t *testing.T) {
 		"too-many": {path, path, path, path, path, path},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := loadTodoImages(paths, true); err == nil {
+			if _, err := loadTodoImageFiles(paths, true); err == nil {
 				t.Fatal("应拒绝无效图片")
 			}
 		})

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -329,6 +330,11 @@ func tryAuditSummary(cloud, token, project string, staleDays int, mine bool) (ma
 
 // fetchPages 按服务端 next_offset 翻页拉全量；maxPages 兜底防止异常游标死循环。
 // 返回 truncated=true 表示触达 maxPages 上限而可能仍有更多，调用方应告警而不是当作完整。
+//
+// 与 preflight.go 的 fetchIssuesPaged 的差异：这里是「服务端分页」——每页按 limit=50
+// 原样消费，遇到 has_more 但缺 next_offset 或 next_offset 不前进即停止，不做页内客户端
+// 过滤后再补拉。preflight 因要跨调试数据筛选生产问题，需要额外的消费位置推进逻辑。
+// 若云端分页口径变化，两处都要同步核对；极端情况下可抽公共分页工具收敛。
 func fetchPages(tool string, baseArgs map[string]any, cloud, token string, maxPages int) ([]map[string]any, bool, error) {
 	var all []map[string]any
 	offset := 0
@@ -679,8 +685,8 @@ func parseAuditOptions(args []string) (auditOptions, error) {
 }
 
 func atoiRange(value string, min, max int, name string) (int, error) {
-	n := 0
-	if _, err := fmt.Sscanf(value, "%d", &n); err != nil || n < min || n > max {
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || n < min || n > max {
 		return 0, fmt.Errorf("%s 需为 %d–%d 的整数", name, min, max)
 	}
 	return n, nil

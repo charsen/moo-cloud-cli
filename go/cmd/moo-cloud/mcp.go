@@ -21,6 +21,10 @@ var claimReminder = strings.Join([]string{
 	"- 只读排查先看 audit_summary / audit --summary 拿总览，再 list_issues / list_todos 深挖；待办可 mine=只看我负责。",
 	"- 待办有多张截图时，对 get_todo.attachments 中每个 ai_readable=true 的附件逐张 get_todo_image 读全现场，别只看第一张。",
 	"- 完成/解决一律以工具返回的 status/done_note/already_* 为准；写入失败或超时不得宣称已完成。",
+	"- 提交或补图用 create_todo 的 image_paths 直传现场截图；正文声称有截图时附件就必须真传到（无附件的「截图未上传」会被判为缺证据）。",
+	"- 一轮测试/排查要建多条待办时，先编好报告文件再用 CLI todo add --batch=<report.json> --dry-run 校验（图片路径、字段），确认后去掉 --dry-run 并加 --yes 一次性提交。",
+	"- 非交互环境（pipe/CI/无 TTY）所有写操作必须显式加 --yes；桥用真实终端判定，不会把重定向/字符设备误当可交互去代你确认。",
+	"- 查看回执与图文核对用 CLI todo show --project=<slug> --id=<id>：正文提到截图却无附件、或有附件正文未提及时要有意核对，别当作已通过。",
 }, "\n")
 
 // appendClaimReminder 在云端给的 initialize 说明后追加「先领取」提醒，保留原文。

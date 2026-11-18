@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -62,8 +63,7 @@ func runIssueResolve(args []string) int {
 
 	// 写操作必须用户显式同意；非交互（脚本/AI）要求 --yes。
 	if !opts.yes {
-		info, statErr := os.Stdin.Stat()
-		if statErr != nil || info.Mode()&os.ModeCharDevice == 0 {
+		if !stdinIsTerminal() {
 			return failConfirm("解决问题需要确认，请在终端确认或加 --yes")
 		}
 		fmt.Fprintf(os.Stderr, "将把 %s 问题 %s 标记为已解决\n", opts.typ, strings.ToLower(opts.key))
@@ -186,13 +186,17 @@ func parseIssueListOptions(args []string) (issueListOptions, error) {
 		case "env":
 			opts.env = value
 		case "limit":
-			if _, err := fmt.Sscanf(value, "%d", &opts.limit); err != nil || opts.limit < 1 || opts.limit > 50 {
+			n, err := strconv.Atoi(strings.TrimSpace(value))
+			if err != nil || n < 1 || n > 50 {
 				return opts, fmt.Errorf("--limit 需为 1–50")
 			}
+			opts.limit = n
 		case "offset":
-			if _, err := fmt.Sscanf(value, "%d", &opts.offset); err != nil || opts.offset < 0 {
+			n, err := strconv.Atoi(strings.TrimSpace(value))
+			if err != nil || n < 0 {
 				return opts, fmt.Errorf("--offset 需为非负整数")
 			}
+			opts.offset = n
 		case "token":
 			opts.token = value
 		case "cloud":

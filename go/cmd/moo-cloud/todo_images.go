@@ -93,16 +93,6 @@ func loadTodoImageFiles(paths []string, absolute bool) ([]todoImageFile, error) 
 	return files, nil
 }
 
-// loadTodoImages 兼容旧路径：把本机图片编码成 base64 data URL（仅 legacy 兼容期使用）。
-func loadTodoImages(paths []string, absolute bool) ([]string, error) {
-	files, err := loadTodoImageFiles(paths, absolute)
-	if err != nil {
-		return nil, err
-	}
-
-	return todoImagesBase64(files), nil
-}
-
 // todoImagesBase64 把已读取的文件编码成 images 参数（旧 base64 通道）。
 func todoImagesBase64(files []todoImageFile) []string {
 	images := make([]string, 0, len(files))
@@ -224,20 +214,31 @@ func uploadTodoImageToQiniu(ticket qiniuTicket, file todoImageFile) error {
 }
 
 // directUploadTodoImages 走完「申请票据 → 逐张直传七牛 → 收集 upload_id」。
+// 注意：七牛直传是逐张进行的，若第 N 张失败，前面已成功上传的对象没有回滚。
+// 这些文件落在票据约定的 todo-attachments/temp/ 前缀下，由 cloud 侧七牛生命周期
+// 规则按 TTL 回收（未绑定的临时对象不会永久占用空间），因此这里只需把已上传的 key
+// 一并报出，便于人工排查，而不是假装整体成功或静默丢弃。
 func directUploadTodoImages(cloud, token, project string, files []todoImageFile) ([]string, error) {
 	tickets, err := requestTodoImageTickets(cloud, token, project, files)
 	if err != nil {
 		return nil, err
 	}
 	ids := make([]string, 0, len(files))
+	uploaded := make([]string, 0, len(files))
 	for i, ticket := range tickets {
 		if err := uploadTodoImageToQiniu(ticket, files[i]); err != nil {
+			if len(uploaded) > 0 {
+				return nil, fmt.Errorf("%w（本次已直传、将被七牛 TTL 回收的对象：%s）", err, strings.Join(uploaded, "、"))
+			}
 			return nil, err
 		}
 		if strings.TrimSpace(ticket.UploadID) == "" {
 			return nil, fmt.Errorf("云端票据缺少 upload_id")
 		}
 		ids = append(ids, ticket.UploadID)
+		if ticket.Key != "" {
+			uploaded = append(uploaded, ticket.Key)
+		}
 	}
 
 	return ids, nil
@@ -315,6 +316,8 @@ func deleteTodoDirectState(key string) {
 
 // todoImageStateKey 只用会影响云端确认令牌的字段 + 图片内容指纹拼出稳定键，
 // 使预览与确认两次调用命中同一份直传结果。
+// 注意：键不含 cloud 地址，隐含「单进程只桥接一个 cloud」的假设；若未来同一桥接
+// 进程支持多云端，需把 cloud 纳入键，避免不同云端相同项目+图片命中同一份缓存。
 func todoImageStateKey(args map[string]json.RawMessage, files []todoImageFile) string {
 	parts := map[string]string{}
 	for k, v := range args {
