@@ -314,7 +314,11 @@ func TestAppendClaimReminder(t *testing.T) {
 	if !strings.Contains(out, "基础说明") {
 		t.Fatalf("原说明丢失：%q", out)
 	}
-	for _, want := range []string{"update_todo_status", "in_progress", "领取人", "audit_summary", "ai_readable=true", "逐张"} {
+	for _, want := range []string{
+		"update_todo_status", "in_progress", "领取人", "audit_summary", "ai_readable=true", "逐张",
+		// 新增能力（批量建单 / 单条详情 / 终端判定）必须出现在引导里。
+		"image_paths", "--batch", "--dry-run", "--yes", "todo show", "非交互",
+	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("领取提醒缺少 %q：%q", want, out)
 		}

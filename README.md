@@ -211,8 +211,9 @@ App 的项目、身份校验结果及失败原因会同时显示在 Markdown 和
 | `moo-cloud preflight` | 身份校验 + 拉取问题/待办（主命令） |
 | `moo-cloud mcp-server` | 本地 stdio MCP 桥，给 AI 客户端用 |
 | `moo-cloud agent-config` | 生成/写入客户端的 MCP 配置 |
-| `moo-cloud todo add` | 记录一条云端待办（可选从问题生成） |
+| `moo-cloud todo add` | 记录一条云端待办（可选从问题生成；`--batch` 批量建单） |
 | `moo-cloud todo list` | 列出待办，可按状态/分页/个人处理范围/对账筛选（missing-note、done-by、日期区间） |
+| `moo-cloud todo show` | 查看单条待办详情、正文摘要与附件清单（含图文核对） |
 | `moo-cloud todo start` / `todo done` | 受理或完成待办并写回处理结果（done 必填 note） |
 | `moo-cloud issue list` | 列出异常（按类型/状态/分页/个人处理范围） |
 | `moo-cloud issue resolve` | 标记异常已解决（写根因/改动/分支 sha/验证） |
@@ -382,7 +383,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | moo
 
 ## 9. MCP 工具
 
-带 `mcp:write` 的账号通过本地桥可使用 16 个工具：下列 14 个云端工具（含只读 `audit_summary`）及 2 个本机更新工具。工具清单随 cloud 部署版本变化——较旧的 cloud 可能没有 `audit_summary`、`list_todos.mine/assignee_id` 等新参数，以实际 `tools/list` 为准；对旧 cloud 相应功能会自动回退或提示。只读 Token 不暴露云端写工具；本机更新仍需用户明确同意，不能借 Token 权限跳过确认。
+带 `mcp:write` 的账号通过本地桥可使用云端工具（含只读 `audit_summary`、直传票据 `create_todo_image_tickets` 等）及 2 个本机更新工具（`check_cli_update`、`update_cli`）。**工具数量随 cloud 部署版本变化**——较旧的 cloud 可能没有 `audit_summary`、`create_todo_image_tickets`、`list_todos.mine/assignee_id` 等，以实际 `tools/list` 为准；对旧 cloud 相应功能会自动回退或提示。只读 Token 不暴露云端写工具；本机更新仍需用户明确同意，不能借 Token 权限跳过确认。
 
 **给 Agent 的操作规范**（`mcp-server` 在 MCP 初始化时随 `instructions` 下发的要点，详见 cloud 版本文档）：
 
@@ -392,6 +393,9 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | moo
 4. **读图**：待办有截图时，对 `get_todo.attachments` 中每个 `ai_readable=true` 的附件逐张 `get_todo_image` 读全现场，别只看第一张。
 5. **写回**：修好并验证后 `update_todo_status` 置 `done` / `resolve_issue` 关闭异常；`note` 必填「根因+改动+分支 sha+验证」；以工具回执为准，**失败或超时不得宣称完成**。
 6. **策略**：待办 auto 可受理+完成、confirm 只能受理、hold 不处理；异常 auto 才可 resolve；范围外类别 403；评论属讨论（confirm/hold 也可评论）但仍需用户同意。
+7. **批量提交**：一轮测试/排查要建多条待办时，先编好报告文件（`{project, items:[{title, category, priority, description, images}]}`），用 CLI `todo add --batch=<report.json> --dry-run` 校验图片路径与字段，确认后去掉 `--dry-run` 加 `--yes` 一次性提交；单条失败不打断其余，末尾汇总含每条 `todo_id`/是否去重/新增附件数。
+8. **图文核对**：提交或补图用 `create_todo` 的 `image_paths` 直传现场截图；正文声称有截图时附件就必须真传到。用 CLI `todo show --project=<slug> --id=<id>` 看回执与附件；正文提到截图却无附件、或有附件正文未提及时有意核对，**别当作已通过**。
+9. **终端判定**：非交互环境（pipe/CI/无 TTY）所有写操作必须显式加 `--yes`；桥用真实终端判定（ioctl/GetConsoleMode），不会把重定向或字符设备误当可交互去代你确认。
 
 | 工具 | 用途 |
 |---|---|
@@ -406,7 +410,8 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | moo
 | `get_todo_image` | 读取待办图片 |
 | `list_comments` | 分页查询异常或 TODO 的团队讨论 |
 | `post_comment` | 发表文字评论（需 `mcp:write`，先取得用户同意） |
-| `create_todo` | 记录待办并附图（需 `mcp:write`） |
+| `create_todo` | 记录待办并附图（需 `mcp:write`；`image_paths` 走七牛直传） |
+| `create_todo_image_tickets` | 为待办附图签发七牛直传票据（`create_todo` 自动调用，无需手调） |
 | `resolve_issue` | 标记问题已解决（需 `mcp:write`） |
 | `update_todo_status` | 受理/完成待办并保存完成结果（需 `mcp:write`） |
 
@@ -451,7 +456,25 @@ moo-cloud todo add --project=my-project --from-issue=runtime:abcdef123456
 # 指定类型/优先级/指派给项目成员，输出 JSON（自动化需 --yes）
 moo-cloud todo add --project=my-project --title="补充回归用例" \
   --category=task --priority=high --assignee=dev@example.com --yes --json
+
+# 批量建单：一次提交一轮测试报告（先 dry-run 校验，再真写）
+moo-cloud todo add --batch=report.json --dry-run
+moo-cloud todo add --batch=report.json --yes
 ```
+
+`report.json` 结构（`project` 可写在顶层对本批生效，单条也可覆盖；`images` 为图片绝对路径）：
+
+```json
+{
+  "project": "my-project",
+  "items": [
+    {"title": "部门会议详情 422", "description": "现象…证据…", "priority": "high", "images": ["/abs/a.png"]},
+    {"title": "部门筛选显示部门 ID", "category": "bug", "priority": "normal"}
+  ]
+}
+```
+
+批量模式逐条创建、单条失败不打断其余，最后输出汇总（含每条 todo_id、是否去重、新增附件数）；任一条失败时退出码非 0。含未知字段会被拒绝，避免拼写错误静默生效。
 
 规则：
 
@@ -477,11 +500,20 @@ Agent 通过本地 MCP 桥创建待办时，用 `image_paths` 传入截图的**�
 }
 ```
 
-首次调用返回项目预览与 `confirm_token`；确认后第二次调用保留相同参数和图片，再加上该令牌。默认走直传：CLI 先申请 `create_todo_image_tickets` 票据，把文件 multipart 直传七牛，再把 `upload_id` 放进 `image_upload_ids`；旧 `images` 数组 base64 仅在 `MCP_TODO_IMAGES_LEGACY=true` 时兼容。
+首次调用返回项目预览与 `confirm_token`；确认后第二次调用保留相同参数和图片，再加上该令牌。默认走直传：CLI 先申请 `create_todo_image_tickets` 票据，把文件 multipart 直传七牛，再把 `upload_id` 放进 `image_upload_ids`；旧 `images` 数组 base64 仅在 `MOO_CLOUD_TODO_IMAGE_MODE=legacy` 时兼容（`auto` 也会在直传不可用时回退）。
 
 图片上传模式由 `MOO_CLOUD_TODO_IMAGE_MODE` 控制：默认 `direct`（只直传，失败直接报错）；`auto` 仅在云端不支持/未配置七牛时回退旧 base64；`legacy` 仅用于兼容旧 cloud。生产 cloud 已关闭旧通道，建议所有客户端保持默认 `direct`。
 
 聊天附件不会自动进入工具参数。Agent 应把用户附图一起传入；如果客户端未提供可读的原图文件，应明确说明图片尚未上传。需要同时使用支持附图的 cloud 和 CLI，更新后重新连接 MCP 才会刷新工具参数。
+
+### 9.1.1 查看单条待办详情
+
+```bash
+moo-cloud todo show --project=my-project --id=<TODO ID>
+moo-cloud todo show --project=my-project --id=<TODO ID> --json
+```
+
+展示标题、状态/优先级/分类、领取人与提交人、正文摘要（前 1500 字）、附件清单（id/类型/mime/大小/AI 是否可读）以及完成说明。附件区会做**图文核对**：正文声称带截图但实际无附件、或有附件但正文未提及时会给出提示，帮助发现「截图未随待办上传」的错位。
 
 ### 9.2 受理待办与写回完成结果
 

@@ -1,5 +1,17 @@
 # 更新记录
 
+## 0.1.9 — 2026-11-18
+
+- 新增 `todo add --batch=<report.json>`：一次提交一轮测试的多条待办（顶层/条目 project、分类、优先级、图片路径），逐条创建并输出汇总；`--dry-run` 只校验不写云端；单条失败不打断其余。
+- 新增 `todo show --project= --id= [--json]`：查看单条待办详情、正文摘要、附件清单与事件；正文声称有截图但无附件、或有附件正文未提及时会提示，缓解「截图未随待办上传」的图文错位。
+- 修复 README 文档：旧 base64 通道开关应为 `MOO_CLOUD_TODO_IMAGE_MODE=legacy`（此前误写成不存在的 `MCP_TODO_IMAGES_LEGACY`）。
+- 删除死代码 `loadTodoImages`（已被 `loadTodoImageFiles` + `todoImagesBase64` 取代）。
+- 七牛多图直传部分失败时，错误信息报出已上传对象 key（依赖七牛 TTL 回收），不再静默丢弃或整体假成功。
+- `issue list` / `audit` 的整数参数由 `fmt.Sscanf`（宽松、接受前缀）改为 `strconv.Atoi`（严格），拒绝 `--limit=20abc` 之类输入。
+- 补充 `docs/BUILD.md` 的 0.1.6 / 0.1.7 / 0.1.8 构建记录；0.1.7 因未保留产物如实标注缺记录。
+- 修复交互判断缺陷：原先用 `ModeCharDevice` 判断标准输入是否终端，会把 null 设备等字符设备误判为可交互，导致重定向/CI 下写操作绕过 `--yes` 前置检查。改为真正的 ioctl/GetConsoleMode 终端判定（新增 `stdinIsTerminal()`，覆盖 todo/issue/comment 全部 5 处写入口）。
+- 文档/引导对齐最新能力：MCP 初始化注入给 Agent 的「本地桥补充提醒」由 4 条扩为 8 条（补批量建单 --dry-run、image_paths 直传图文核对、非交互必加 --yes、todo show 核对回执）；README「给 Agent 的操作规范」同步补第 7–9 点，工具表补 `create_todo_image_tickets`，工具数量改为随部署变化（以 tools/list 为准）。
+
 ## 0.1.8 — 2026-11-18
 
 - 图片上传默认模式改为 `direct`：只走七牛直传，失败直接报错；`auto`/`legacy` 仅显式开启。

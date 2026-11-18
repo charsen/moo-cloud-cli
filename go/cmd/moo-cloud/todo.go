@@ -27,6 +27,8 @@ type todoOptions struct {
 	cloud       string
 	json        bool
 	yes         bool
+	dryRun      bool
+	batch       string
 	images      []string
 }
 
@@ -53,6 +55,8 @@ func runTodo(args []string) int {
 		return runTodoAdd(rest)
 	case "list":
 		return runTodoList(rest)
+	case "show":
+		return runTodoShow(rest)
 	case "start":
 		return runTodoUpdate(rest, "in_progress")
 	case "done":
@@ -69,6 +73,11 @@ func runTodoAdd(args []string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "参数错误："+err.Error())
 		return 1
+	}
+
+	// --batch 走批量建单：一次读取报告 JSON，逐条创建并输出汇总。
+	if opts.batch != "" {
+		return runTodoBatch(opts)
 	}
 
 	result, err := addTodo(opts)
@@ -105,7 +114,9 @@ func runTodoAdd(args []string) int {
 func printTodoHelp() {
 	fmt.Print(`用法：
   moo-cloud todo add   --project=<slug> --title="..." [选项]
+  moo-cloud todo add   --batch=<report.json> [--dry-run] [--yes]   批量建单
   moo-cloud todo list  --project=<slug> [--status=open|in_progress|done] [--limit --offset] [--respect-scope]
+  moo-cloud todo show  --project=<slug> --id=<TODO ID> [--json]   查看单条详情与附件
   moo-cloud todo start --project=<slug> --id=<TODO ID> [--note="..."]
   moo-cloud todo done  --project=<slug> --id=<TODO ID> --note="...（根因/改动/分支 sha/验证）"
 
@@ -122,6 +133,8 @@ add 选项:
   --cloud=...         覆盖 cloud 地址
   --json              输出机器可读 JSON
   --yes               跳过交互确认（仍会走两阶段确认令牌）
+  --batch=<file>      从 JSON 报告批量建单（{project,items:[{title,category,priority,description,assignee,images}]}）
+  --dry-run           配合 --batch：只校验并打印计划，不写云端
 
 list 选项:
   --status=...        可选 open / in_progress / done；默认 open+in_progress
@@ -157,15 +170,18 @@ func parseTodoOptions(args []string) (todoOptions, error) {
 			return opts, fmt.Errorf("不支持非选项参数：%s", arg)
 		}
 		key, value, hasValue := strings.Cut(arg[2:], "=")
-		if key == "json" || key == "yes" {
+		if key == "json" || key == "yes" || key == "dry-run" {
 			enabled, err := parseBoolFlag(key, value, hasValue)
 			if err != nil {
 				return opts, err
 			}
-			if key == "json" {
+			switch key {
+			case "json":
 				opts.json = enabled
-			} else {
+			case "yes":
 				opts.yes = enabled
+			default:
+				opts.dryRun = enabled
 			}
 			continue
 		}
@@ -193,6 +209,8 @@ func parseTodoOptions(args []string) (todoOptions, error) {
 			opts.sourceType = value
 		case "source-key":
 			opts.sourceKey = value
+		case "batch":
+			opts.batch = value
 		case "token":
 			opts.token = value
 		case "cloud":
@@ -202,6 +220,15 @@ func parseTodoOptions(args []string) (todoOptions, error) {
 		}
 	}
 
+	// --batch：project/分类/优先级/标题等都来自报告文件，不接受单条参数混用，
+	// 否则用户会误以为 --title/--image 等对批量生效（静默忽略是危险的）。
+	if opts.batch != "" {
+		if opts.project != "" || opts.title != "" || opts.description != "" || len(opts.images) > 0 ||
+			opts.assignee != "" || opts.fromIssue != "" || opts.sourceType != "" || opts.sourceKey != "" {
+			return opts, fmt.Errorf("--batch 不能与 --project/--title/--description/--image/--assignee/--from-issue/--source-* 混用，这些字段请写进报告文件")
+		}
+		return opts, nil
+	}
 	if strings.TrimSpace(opts.project) == "" {
 		return opts, fmt.Errorf("--project 必填")
 	}
@@ -353,8 +380,7 @@ func addTodo(opts todoOptions) (map[string]any, error) {
 	slug, _ := project["slug"].(string)
 
 	if !opts.yes {
-		info, statErr := os.Stdin.Stat()
-		if statErr != nil || info.Mode()&os.ModeCharDevice == 0 {
+		if !stdinIsTerminal() {
 			return nil, fmt.Errorf("需要确认项目「%s」（%s）：请在终端确认，或加 --yes", name, slug)
 		}
 
@@ -701,8 +727,7 @@ func runTodoUpdate(args []string, status string) int {
 
 	// 写操作必须用户显式同意；脚本/AI 非交互场景要求 --yes。
 	if !opts.yes {
-		info, statErr := os.Stdin.Stat()
-		if statErr != nil || info.Mode()&os.ModeCharDevice == 0 {
+		if !stdinIsTerminal() {
 			return failConfirm("将待办标记为 " + status + " 需要确认，请在终端确认或加 --yes")
 		}
 		fmt.Fprintf(os.Stderr, "将把待办 %s 标记为 %s\n", opts.id, status)

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -91,13 +92,15 @@ type qiniuFake struct {
 	tokens    []string
 	sizes     []int
 	fail      bool
+	failAt    int // 第 n 次请求（1-based）返回 500；0 表示不按次数失败
 	bodyError bool
 }
 
 func (q *qiniuFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	q.mu.Lock()
 	q.requested++
-	fail := q.fail
+	n := q.requested
+	fail := q.fail || (q.failAt > 0 && n == q.failAt)
 	bodyError := q.bodyError
 	q.mu.Unlock()
 	if fail {
@@ -214,6 +217,32 @@ func TestAddTodoDirectUploadsAndSendsUploadIDs(t *testing.T) {
 	}
 	if qiniu.keys[0] != "todo-attachments/temp/U1/x.png" || qiniu.tokens[0] != "tok-U1" {
 		t.Fatalf("直传票据字段错误：key=%q token=%q", qiniu.keys[0], qiniu.tokens[0])
+	}
+}
+
+// 多图直传时第 2 张失败：必须返回错误，并在错误信息里带出第 1 张已上传的 key，
+// 便于人工排查（依赖七牛 TTL 回收）；不能静默丢弃也不能当作整体成功。
+func TestDirectUploadReportsAlreadyUploadedKeysOnPartialFailure(t *testing.T) {
+	t.Setenv("MOO_CLOUD_TODO_IMAGE_MODE", todoImageModeDirect)
+	path, _ := todoTestImage(t)
+	mcp := &todoDirectMCP{}
+	qiniu := &qiniuFake{failAt: 2}
+	msrv := todoDirectSetup(t, mcp, qiniu)
+
+	files, err := loadTodoImageFiles([]string{path, path}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = directUploadTodoImages(msrv.URL, "test-token", "p", files)
+	if err == nil {
+		t.Fatal("第 2 张失败必须返回错误")
+	}
+	// 第 1 张的 key 应出现在错误信息里（fake 回显 key，形如 todo-attachments/temp/U1/x.png）
+	if !strings.Contains(err.Error(), "todo-attachments/temp/U1/x.png") {
+		t.Fatalf("错误信息应报出已上传 key，实际：%v", err)
+	}
+	if len(mcp.createCalls) != 0 {
+		t.Fatalf("部分失败后不应创建待办，实际 %d", len(mcp.createCalls))
 	}
 }
 

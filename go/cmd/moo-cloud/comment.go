@@ -167,8 +167,7 @@ func callComment(action string, opts commentOptions) (map[string]any, error) {
 	tool := "list_comments"
 	if action == "add" {
 		if !opts.yes {
-			info, err := os.Stdin.Stat()
-			if err != nil || info.Mode()&os.ModeCharDevice == 0 {
+			if !stdinIsTerminal() {
 				return nil, fmt.Errorf("发表评论需要终端确认；自动化调用需先取得用户同意再加 --yes")
 			}
 			fmt.Fprintf(os.Stderr, "将向项目「%s」的 %s %s%s 发表评论（%d 字）\n确认？[y/N] ", opts.project, opts.typ, opts.key, opts.id, utf8.RuneCountInString(strings.TrimSpace(opts.body)))

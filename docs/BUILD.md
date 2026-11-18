@@ -28,6 +28,43 @@ CLI 更新源为 GitHub Release，访问失败时尝试 Gitee。附图功能还�
 - 测试用例数随迭代增长（0.1.4 时期为 85 项）；请以本机 `go test ./...` 实际结果为准，历史构建记录中的数字仅代表当次发布。当前 CLI 顶层测试通过、含 race 检查；WorkBuddy 隔离项目完成 63 次实际工具调用，正式更新检查连续两次复测通过。详细范围及历史构建记录见下文。
 - 2026-11-12 发布时未执行真实 Agent 聊天附图上传；2026-11-13 已补充 WorkBuddy 桌面本地隔离验收，见下文。本次仍未部署 cloud，不能将源码发布或本地验收视为线上功能已生效。
 
+## 最近构建 · 0.1.8（2026-11-18）
+
+源码提交：`074e61f`（干净工作区，六个平台均为 `vcs.modified=false`，`go version -m` 回读确认 `vcs.revision=074e61fd421ee314535bbfac91a10285e5c114f8`）；Go 1.27.4，`CGO_ENABLED=0`，`make -C go dist VERSION=0.1.8`。标签 `0.1.8`。
+
+| 文件（位于 `dist/`） | 字节大小 | SHA-256 |
+| --- | ---: | --- |
+| `moo-cloud-darwin-amd64` | 7675920 | `3a1a8fcdbf1f1a12e220079059527dbafd347b27ede4a5b3ada3d632437cc1b8` |
+| `moo-cloud-darwin-arm64` | 7079170 | `7d21dea7e789d24b80743075633f2a502011c2954325fbf20075441bf001d33d` |
+| `moo-cloud-linux-amd64` | 7532704 | `f6bb25faa3eb5e4b1c0e908b1fd1a5010dc0b9cc9ca11cc103d58e550b5d7618` |
+| `moo-cloud-linux-arm64` | 6946976 | `13b81b609c3360c33ee41b7fe214e7bf35c4b091fd482ce2f7f5789ff39ef2d1` |
+| `moo-cloud-windows-amd64.exe` | 7750656 | `f51065760a9c7ab87ef637761a00c9c82247cf0376bf4a949af4c810c5dfe377` |
+| `moo-cloud-windows-arm64.exe` | 7015936 | `d72be6a2af93c956f9506895bfe1001564a4de709ef94ba64a420e81ee9f0b10` |
+
+- 本次变更：图片默认 `direct`（严格直传、失败直接报错）；七牛回执校验补齐（HTTP 200 带 `error`/缺 `key`/key 不一致均失败）；`SHA256SUMS` 用 basename；新增 `BUILD-0.1.8.json`。
+- 本表数据取自 `dist/BUILD-0.1.8.json`，与 `SHA256SUMS` 逐条一致；macOS arm64 执行 `--version` 返回 `moo-cloud 0.1.8`；Go 链接器 ad-hoc 签名，未 Developer ID 签名或公证；其他平台未执行目标机启动验证。
+- 标签 `0.1.8` 已推送 origin 与 github，两者均指向 `10f145f`（merge 提交，含 `074e61f` 的修复内容）。
+
+## 构建记录 · 0.1.7（2026-11-17）
+
+标签 `0.1.7` 指向 `e523b93`；本次发布六平台二进制与 `SHA256SUMS`，主要变更：`create_todo` 图片改为七牛直传（`create_todo_image_tickets` 票据 + multipart 直传 + `image_upload_ids`）。
+**注意：本页未保留 0.1.7 的逐文件大小与 SHA-256 记录**（`dist/` 未纳入版本库、未生成 `BUILD-0.1.7.json`），如需复核请以该标签对应 `dist/SHA256SUMS` 为准，不要凭空补数。
+
+## 构建记录 · 0.1.6（2026-11-14）
+
+源码提交：`12526208`（标签 `0.1.6`）；Go 1.27.4，`CGO_ENABLED=0`，`make -C go dist VERSION=0.1.6`。
+
+| 文件（位于 `dist/`） | 字节大小 | SHA-256 |
+| --- | ---: | --- |
+| `moo-cloud-darwin-amd64` | 7642496 | `a4d2b7ac6e3c3899ed5508b3167472b1da514df79a5ae8012f23fed2ec9c6dcc` |
+| `moo-cloud-darwin-arm64` | 7062002 | `5ffda544987b302a4d568b187051f4daa13721913dd4c248257195b983681a8a` |
+| `moo-cloud-linux-amd64` | 7495840 | `a6535582881c97765d98fa6a70c92ca519f087fcc87f2e89d494fce058b2b646` |
+| `moo-cloud-linux-arm64` | 6881440 | `81f02587e7b97e55ee73cc06e02413bcecdeb87301e0b5f7d5edccd7e4056e57` |
+| `moo-cloud-windows-amd64.exe` | 7717888 | `1d1446ed181083c3ec85293483bfec03f312ed0e1d05f41ee6a81066774339ab` |
+| `moo-cloud-windows-arm64.exe` | 6986752 | `6fc7a3c83976343daa0a4e71306fd3592c76567a435c0bd79a58fa68b7e2adfd` |
+
+- 本表数据取自 `dist/BUILD-0.1.6.json`。主要变更：`todo list` 补齐对账筛选；`audit` 新增 `--mine`/`--summary`；`issue list` 支持 `--env`。
+
 ## 最近构建 · 0.1.5（2026-11-13）
 
 源码提交：`1200e757ca1fafecec8ee437c118c769794b3b02`（干净工作区，六个平台均为 `vcs.modified=false`）；Go 1.27.4，`CGO_ENABLED=0`，`make -C go dist VERSION=0.1.5`。

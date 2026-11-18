@@ -50,8 +50,9 @@ func printHelp() {
   moo-cloud preflight [选项]        身份校验 + 拉取异常/待办队列
   moo-cloud mcp-server [选项]       本地 stdio MCP 桥（给 Codex / WorkBuddy 等）
   moo-cloud agent-config [选项]     生成/写入各客户端的 MCP 配置
-  moo-cloud todo add [选项]         记录一条云端待办
+  moo-cloud todo add [选项]         记录一条云端待办（--batch 可批量）
   moo-cloud todo list [选项]        列出待办（可按状态/分页/个人范围）
+  moo-cloud todo show [选项]        查看单条待办详情与附件
   moo-cloud todo start|done [选项]  受理(领取:状态+领取人)或完成待办并写回处理结果
   moo-cloud issue list [选项]       列出异常（类型/状态/分页/个人范围）
   moo-cloud issue resolve [选项]    标记异常已解决（写根因/改动/分支 sha/验证）
