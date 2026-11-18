@@ -1,5 +1,12 @@
 # 更新记录
 
+## 0.1.8 — 2026-11-18
+
+- 图片上传默认模式改为 `direct`：只走七牛直传，失败直接报错；`auto`/`legacy` 仅显式开启。
+- 七牛上传校验补齐：HTTP 200 但返回 `error`、缺少 `key` 或 key 不一致都会失败，不再把失败当成功。
+- 发布资产修正：`SHA256SUMS` 改为 basename；新增 `dist/BUILD-<version>.json` Go 元数据。
+- 文档补充 `MOO_CLOUD_TODO_IMAGE_MODE` 与旧 cloud 兼容边界。
+
 ## 0.1.7 — 2026-11-17
 
 - create_todo 图片改为七牛直传：本地桥/CLI 先申请 `create_todo_image_tickets` 票据并直传七牛，再以 `image_upload_ids` 创建待办；旧 `images`/`image_paths` base64 通道保留过渡。
