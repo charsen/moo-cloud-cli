@@ -342,37 +342,28 @@ func addTodo(opts todoOptions) (map[string]any, error) {
 		args["source"] = source
 	}
 
-	// 图片默认只走七牛直传（cloud 不中转）；auto 仅在显式设置时允许回退旧 base64。
+	// 预览只发送业务参数和提交键，确认前不发图片或申请上传票据。
+	var files []todoImageFile
 	if len(opts.images) > 0 {
-		files, err := loadTodoImageFiles(opts.images, false)
+		files, err = loadTodoImageFiles(opts.images, false)
 		if err != nil {
 			return nil, err
 		}
-		state, err := chooseTodoImageState(cloud+"/api/v1/mcp", token, opts.project, files)
-		if err != nil {
-			return nil, err
-		}
-		if state.mode == todoImageModeDirect {
-			args["image_upload_ids"] = state.uploadIDs
-		} else {
-			args["images"] = todoImagesBase64(files)
-		}
+		args["submission_key"] = todoSubmissionKey(args, files)
 	}
 
-	// 预览调用只读、幂等，可安全重试；仅“确认写入”那次不重试，避免重复创建。
 	preview, err := mcpCall(cloud, token, "create_todo", args)
 	if err != nil {
 		return nil, err
 	}
-
-	requires, _ := preview["requires_confirmation"].(bool)
-	if !requires {
-		return nil, fmt.Errorf("云端创建待办响应缺少项目确认信息")
+	if len(files) > 0 {
+		if receipt, err := todoSubmissionReceipt(preview, len(files)); receipt != nil || err != nil {
+			return receipt, err
+		}
 	}
-
-	tokenValue, _ := preview["confirm_token"].(string)
-	if tokenValue == "" {
-		return nil, fmt.Errorf("云端要求确认项目，但没有返回 confirm_token")
+	tokenValue, err := todoPreviewToken(preview)
+	if err != nil {
+		return nil, err
 	}
 
 	project, _ := preview["project"].(map[string]any)
@@ -385,7 +376,7 @@ func addTodo(opts todoOptions) (map[string]any, error) {
 		}
 
 		fmt.Fprintf(os.Stderr, "将写入项目「%s」（%s）\n", name, slug)
-		fmt.Fprintf(os.Stderr, "待办：%v\n", args["title"])
+		fmt.Fprintf(os.Stderr, "待办：%v（%d 张附件）\n", args["title"], len(files))
 		fmt.Fprint(os.Stderr, "确认？[y/N] ")
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		switch strings.ToLower(strings.TrimSpace(line)) {
@@ -395,16 +386,12 @@ func addTodo(opts todoOptions) (map[string]any, error) {
 		}
 	}
 
-	args["confirm_token"] = tokenValue
+	if len(files) > 0 {
+		return submitTodoWithImages(cloud, token, args, files, preview["submission_recovery"] == true, json.RawMessage("1"))
+	}
 
-	result, err := mcpCallNoRetry(cloud, token, "create_todo", args)
-	if err != nil {
-		return nil, err
-	}
-	if err := verifyTodoImages(result, len(opts.images)); err != nil {
-		return nil, err
-	}
-	return result, nil
+	args["confirm_token"] = tokenValue
+	return mcpCallNoRetry(cloud, token, "create_todo", args)
 }
 
 func splitIssueRef(ref string) (string, string, error) {

@@ -6,8 +6,10 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -181,7 +183,7 @@ func uploadTodoImageToQiniu(ticket qiniuTicket, file todoImageFile) error {
 		return err
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := fixedEndpointClient(60 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("七牛上传失败：%w", err)
@@ -244,109 +246,195 @@ func directUploadTodoImages(cloud, token, project string, files []todoImageFile)
 	return ids, nil
 }
 
-// chooseTodoImageState 决定一次预览用直传还是旧 base64：
-//
-//	direct 模式：只直传，失败直接返回错误（不回退，避免掩盖真实故障）；
-//	legacy 模式：直接旧路径；
-//	auto（默认）：先直传，云端不支持或未配置七牛时回退旧路径（打印提示，不谎报成功）。
-func chooseTodoImageState(endpoint, token, project string, files []todoImageFile) (todoDirectState, error) {
+// setTodoImageArgs 只在用户确认项目后调用；auto 仅接受 Cloud 明确声明可回退的错误。
+func setTodoImageArgs(cloud, token string, args map[string]any, files []todoImageFile) error {
 	mode := todoImageMode()
-	if mode == todoImageModeLegacy {
-		return todoDirectState{mode: todoImageModeLegacy}, nil
+	if mode != todoImageModeLegacy {
+		ids, err := directUploadTodoImages(cloud, token, str(args["project"]), files)
+		if err == nil {
+			args["image_upload_ids"] = ids
+			return nil
+		}
+		var toolErr *mcpToolError
+		if mode != todoImageModeAuto || !errors.As(err, &toolErr) || toolErr.code != "todo_direct_upload_unavailable" {
+			return err
+		}
+		fmt.Fprintln(os.Stderr, "提示：Cloud 当前未提供直传，改用 base64 上传")
 	}
-	cloud := strings.TrimSuffix(endpoint, "/api/v1/mcp")
-	ids, err := directUploadTodoImages(cloud, token, project, files)
-	if err == nil {
-		return todoDirectState{mode: todoImageModeDirect, uploadIDs: ids}, nil
-	}
-	if mode == todoImageModeDirect {
-		return todoDirectState{}, err
-	}
-	fmt.Fprintf(os.Stderr, "提示：七牛直传失败，回退旧 base64 上传：%v\n", err)
-
-	return todoDirectState{mode: todoImageModeLegacy}, nil
+	args["images"] = todoImagesBase64(files)
+	return nil
 }
 
-// todoDirectState 缓存一次 create_todo 两阶段之间的直传结果，避免预览与确认重复上传。
-// 键为参数 + 图片内容指纹，不依赖 confirm_token（预览阶段还拿不到令牌）。
-type todoDirectState struct {
-	mode      string
-	uploadIDs []string
+type todoImagePreview struct {
+	token     string
+	recovery  bool
+	attempted bool
 	expires   time.Time
 }
 
-var (
-	todoDirectStatesMu sync.Mutex
-	todoDirectStates   = map[string]todoDirectState{}
-)
+var todoImagePreviews = struct {
+	sync.Mutex
+	byKey map[string]todoImagePreview
+}{byKey: map[string]todoImagePreview{}}
 
-const todoDirectStateTTL = 15 * time.Minute
-
-func putTodoDirectState(key string, state todoDirectState) {
-	todoDirectStatesMu.Lock()
-	defer todoDirectStatesMu.Unlock()
-	now := time.Now()
-	for k, v := range todoDirectStates {
-		if now.After(v.expires) {
-			delete(todoDirectStates, k)
-		}
-	}
-	state.expires = now.Add(todoDirectStateTTL)
-	todoDirectStates[key] = state
-}
-
-func getTodoDirectState(key string) (todoDirectState, bool) {
-	todoDirectStatesMu.Lock()
-	defer todoDirectStatesMu.Unlock()
-	state, ok := todoDirectStates[key]
-	if !ok || time.Now().After(state.expires) {
-		delete(todoDirectStates, key)
-
-		return todoDirectState{}, false
-	}
-
-	return state, true
-}
-
-func deleteTodoDirectState(key string) {
-	todoDirectStatesMu.Lock()
-	defer todoDirectStatesMu.Unlock()
-	delete(todoDirectStates, key)
-}
-
-// todoImageStateKey 只用会影响云端确认令牌的字段 + 图片内容指纹拼出稳定键，
-// 使预览与确认两次调用命中同一份直传结果。
-// 注意：键不含 cloud 地址，隐含「单进程只桥接一个 cloud」的假设；若未来同一桥接
-// 进程支持多云端，需把 cloud 纳入键，避免不同云端相同项目+图片命中同一份缓存。
-func todoImageStateKey(args map[string]json.RawMessage, files []todoImageFile) string {
-	parts := map[string]string{}
-	for k, v := range args {
-		switch k {
-		case "image_paths", "images", "image_upload_ids", "confirm_token":
-			continue
-		}
-		parts[k] = string(v)
-	}
+// todoSubmissionKey 在重跑时保持稳定。只散列业务参数和有序图片内容，不包含路径或票据。
+func todoSubmissionKey(args map[string]any, files []todoImageFile) string {
 	shas := make([]string, 0, len(files))
 	for _, f := range files {
 		shas = append(shas, f.SHA256)
 	}
-	raw, _ := json.Marshal(map[string]any{"args": parts, "sha": shas})
+	raw, _ := json.Marshal(map[string]any{"args": args, "sha": shas})
 	sum := sha256.Sum256(raw)
-
 	return hex.EncodeToString(sum[:])
+}
+
+func todoPreviewToken(preview map[string]any) (string, error) {
+	token := str(preview["confirm_token"])
+	if preview["requires_confirmation"] != true || token == "" {
+		return "", fmt.Errorf("云端创建待办响应缺少项目确认信息")
+	}
+	return token, nil
+}
+
+func todoSubmissionReceipt(preview map[string]any, imageCount int) (map[string]any, error) {
+	raw, present := preview["submission_receipt"]
+	if !present {
+		return nil, nil
+	}
+	receipt, ok := raw.(map[string]any)
+	if !ok || receipt == nil {
+		return nil, fmt.Errorf("云端返回了无效的直传提交回执")
+	}
+	if err := verifyTodoImages(receipt, imageCount); err != nil {
+		return nil, err
+	}
+	return receipt, nil
+}
+
+// submitTodoWithImages 仅在确认项目后传输文件，再取得绑定最终票据的新令牌。
+// 已得到回执的请求无需传图；写入传输结果不明时，尝试只读查回执。
+func submitTodoWithImages(cloud, token string, args map[string]any, files []todoImageFile, recovery bool, id json.RawMessage) (map[string]any, error) {
+	if !recovery {
+		delete(args, "submission_key")
+	}
+	lookup := maps.Clone(args)
+	if err := setTodoImageArgs(cloud, token, args, files); err != nil {
+		return nil, err
+	}
+	direct := args["image_upload_ids"] != nil
+	if !direct {
+		delete(args, "submission_key")
+	}
+	preview, err := mcpCallWithID(cloud, token, "create_todo", args, 3, id)
+	if err != nil {
+		return nil, err
+	}
+	if receipt, err := todoSubmissionReceipt(preview, len(files)); receipt != nil || err != nil {
+		return receipt, err
+	}
+	confirm, err := todoPreviewToken(preview)
+	if err != nil {
+		return nil, err
+	}
+
+	args["confirm_token"] = confirm
+	result, err := mcpCallWithID(cloud, token, "create_todo", args, 1, id)
+	if err == nil {
+		err = verifyTodoImages(result, len(files))
+	}
+	if err == nil {
+		return result, nil
+	}
+	var toolErr *mcpToolError
+	if direct && recovery && !errors.As(err, &toolErr) {
+		if preview, lookupErr := mcpCallWithID(cloud, token, "create_todo", lookup, 1, id); lookupErr == nil {
+			if receipt, receiptErr := todoSubmissionReceipt(preview, len(files)); receipt != nil && receiptErr == nil {
+				return receipt, nil
+			}
+		}
+		return nil, fmt.Errorf("直传提交结果尚未确认；24 小时内用相同参数和图片重试可查询或继续提交：%w", err)
+	}
+	return nil, err
+}
+
+// bridgeTodoImageCall 以 Cloud 的项目确认令牌绑定本机预览和图片指纹。
+// 未收到绑定到该项目和文件的确认令牌前，桥只发无文件预览请求。
+func bridgeTodoImageCall(cloud, token string, args map[string]any, files []todoImageFile, id json.RawMessage) (map[string]any, error) {
+	confirm := args["confirm_token"]
+	delete(args, "confirm_token")
+	delete(args, "submission_key")
+	key := todoSubmissionKey(args, files)
+	args["submission_key"] = key
+	// 令牌与地址参与本机缓存隔离，但不写入 Cloud 提交键。
+	bridgeKey := sha256.Sum256([]byte(cloud + "\x00" + token + "\x00" + key))
+	cacheKey := hex.EncodeToString(bridgeKey[:])
+	if confirm == nil {
+		preview, err := mcpCallWithID(cloud, token, "create_todo", args, 3, id)
+		if err != nil {
+			return nil, err
+		}
+		if receipt, err := todoSubmissionReceipt(preview, len(files)); receipt != nil || err != nil {
+			return receipt, err
+		}
+		confirmToken, err := todoPreviewToken(preview)
+		if err != nil {
+			return nil, err
+		}
+		preview["images_requested"] = len(files)
+		now := time.Now()
+		todoImagePreviews.Lock()
+		for k, state := range todoImagePreviews.byKey {
+			if !now.Before(state.expires) {
+				delete(todoImagePreviews.byKey, k)
+			}
+		}
+		todoImagePreviews.byKey[cacheKey] = todoImagePreview{
+			token: confirmToken, expires: now.Add(5 * time.Minute), recovery: preview["submission_recovery"] == true,
+		}
+		todoImagePreviews.Unlock()
+		return preview, nil
+	}
+
+	todoImagePreviews.Lock()
+	state, ok := todoImagePreviews.byKey[cacheKey]
+	if !ok || !time.Now().Before(state.expires) || confirm != state.token {
+		todoImagePreviews.Unlock()
+		return nil, fmt.Errorf("本地桥未找到有效的项目及图片预览，请重新发起 create_todo（重新预览）")
+	}
+	attempted := state.attempted
+	state.attempted = true
+	todoImagePreviews.byKey[cacheKey] = state
+	todoImagePreviews.Unlock()
+
+	// 确认重发时，原请求可能已在后台完成。先查回执再决定是否申请新票据。
+	if attempted && state.recovery {
+		preview, err := mcpCallWithID(cloud, token, "create_todo", args, 1, id)
+		if err != nil {
+			return nil, fmt.Errorf("无法查询上次直传结果：%w", err)
+		}
+		if receipt, err := todoSubmissionReceipt(preview, len(files)); receipt != nil || err != nil {
+			return receipt, err
+		}
+	}
+	result, err := submitTodoWithImages(cloud, token, args, files, state.recovery, id)
+	if err == nil {
+		todoImagePreviews.Lock()
+		delete(todoImagePreviews.byKey, cacheKey)
+		todoImagePreviews.Unlock()
+	}
+	return result, err
 }
 
 // 有传图就必须拿到明确回执；不能把仅创建了文字的响应当作上传成功。
 func verifyTodoImages(result map[string]any, requested int) error {
-	if requested == 0 || result["requires_confirmation"] == true {
-		return nil
-	}
-	if count, ok := result["images_attached"].(float64); ok && count == float64(requested) {
+	if requested == 0 {
 		return nil
 	}
 	todo, _ := result["todo"].(map[string]any)
 	id, _ := todo["id"].(string)
+	if count, ok := result["images_attached"].(float64); ok && count == float64(requested) && id != "" {
+		return nil
+	}
 
 	return fmt.Errorf("云端未确认保存全部 %d 张图片（待办 ID：%s）；请检查附件后再重试，不能视为上传成功", requested, id)
 }
@@ -364,7 +452,7 @@ func todoImageToolDefinition(raw json.RawMessage) json.RawMessage {
 	}
 	properties["image_paths"] = map[string]any{
 		"type": "array", "maxItems": 5, "items": map[string]any{"type": "string"},
-		"description": "用户提供图片时请一并传入图片文件的绝对路径；最多 5 张，每张不超过 8 MiB（像素上限由云端校验），支持 PNG/JPEG/WebP/GIF。本地桥优先直传七牛（cloud 不中转），两次确认调用须使用相同图片。与 images 二选一。拿不到原图时明确告知用户，不能声称图片已上传。",
+		"description": "用户提供图片时请一并传入图片文件的绝对路径；最多 5 张，每张不超过 8 MiB（像素上限由云端校验），支持 PNG/JPEG/WebP/GIF。两次确认调用须使用相同图片，确认项目后桥才上传文件。与 images 二选一。拿不到原图时明确告知用户，不能声称图片已上传。",
 	}
 	tool["description"] = fmt.Sprint(tool["description"]) + " 本机可用 image_paths 上传用户附图，不需要手工编码 base64。"
 	encoded, _ := json.Marshal(tool)

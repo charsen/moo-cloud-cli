@@ -90,6 +90,22 @@ func initialToken() string {
 	return ""
 }
 
+// 认证请求和带票据的文件上传固定使用原始地址，避免凭据随重定向离开该地址。
+func fixedEndpointClient(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+}
+
+const todoCommitTimeout = 9 * time.Minute
+
+type mcpToolError struct {
+	message string
+	code    string
+}
+
+func (e *mcpToolError) Error() string { return "工具返回错误：" + e.message }
+
 func httpJSON(url string, payload any, headers map[string]string, timeout time.Duration) (int, []byte, error) {
 	return httpJSONN(url, payload, headers, timeout, 3)
 }
@@ -120,7 +136,7 @@ func httpJSONN(url string, payload any, headers map[string]string, timeout time.
 			req.Header.Set(k, v)
 		}
 
-		client := &http.Client{Timeout: timeout}
+		client := fixedEndpointClient(timeout)
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
@@ -182,10 +198,18 @@ func mcpCallNoRetry(cloud, token, tool string, args map[string]any) (map[string]
 }
 
 func mcpCallN(cloud, token, tool string, args map[string]any, attempts int) (map[string]any, error) {
+	return mcpCallWithID(cloud, token, tool, args, attempts, json.RawMessage("1"))
+}
+
+func mcpCallWithID(cloud, token, tool string, args map[string]any, attempts int, id json.RawMessage) (map[string]any, error) {
+	timeout := 20 * time.Second
+	if tool == "create_todo" && args["confirm_token"] != nil && args["image_upload_ids"] != nil {
+		timeout = todoCommitTimeout
+	}
 	status, body, err := httpJSONN(cloud+"/api/v1/mcp", map[string]any{
-		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"jsonrpc": "2.0", "id": id, "method": "tools/call",
 		"params": map[string]any{"name": tool, "arguments": args},
-	}, map[string]string{"Authorization": "Bearer " + token}, 20*time.Second, attempts)
+	}, map[string]string{"Authorization": "Bearer " + token}, timeout, attempts)
 	if err != nil {
 		return nil, err
 	}
@@ -200,6 +224,9 @@ func mcpCallN(cloud, token, tool string, args map[string]any, attempts int) (map
 				Text string `json:"text"`
 			} `json:"content"`
 			IsError bool `json:"isError"`
+			Meta    struct {
+				Code string `json:"code"`
+			} `json:"_meta"`
 		} `json:"result"`
 		Error *struct {
 			Message string `json:"message"`
@@ -218,11 +245,11 @@ func mcpCallN(cloud, token, tool string, args map[string]any, attempts int) (map
 	}
 	text := resp.Result.Content[0].Text
 	if resp.Result.IsError {
-		return nil, fmt.Errorf("工具返回错误：%s", text)
+		return nil, &mcpToolError{message: text, code: resp.Result.Meta.Code}
 	}
 
 	var data map[string]any
-	if err := json.Unmarshal([]byte(text), &data); err != nil {
+	if err := json.Unmarshal([]byte(text), &data); err != nil || data == nil {
 		return nil, fmt.Errorf("工具返回不是 JSON 对象")
 	}
 

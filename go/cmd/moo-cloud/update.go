@@ -195,12 +195,20 @@ func (u *cliUpdater) get(ctx context.Context, url string, limit int64) ([]byte, 
 	return data, nil
 }
 
-func (u *cliUpdater) releaseFrom(ctx context.Context, source string) (cliRelease, error) {
-	endpoint := "https://api.github.com/repos/charsen/moo-cloud-cli/releases/latest"
+func (u *cliUpdater) releaseFrom(ctx context.Context, source string, tag string) (cliRelease, error) {
+	endpoint := "https://api.github.com/repos/charsen/moo-cloud-cli/releases"
 	if source == "gitee" {
-		endpoint = "https://gitee.com/api/v5/repos/charsen/moo-cloud-cli/releases/latest"
+		endpoint = "https://gitee.com/api/v5/repos/charsen/moo-cloud-cli/releases"
 	} else if source != "github" {
 		return cliRelease{}, fmt.Errorf("未知的发布源")
+	}
+	if tag == "" {
+		endpoint += "/latest"
+	} else {
+		if _, valid := cliSemver(tag); !valid {
+			return cliRelease{}, fmt.Errorf("无效的发布标签")
+		}
+		endpoint += "/tags/" + tag
 	}
 	data, err := u.get(ctx, endpoint, 2<<20)
 	var release cliRelease
@@ -210,6 +218,9 @@ func (u *cliUpdater) releaseFrom(ctx context.Context, source string) (cliRelease
 	release.Source = source
 	if err == nil {
 		err = u.validateRelease(release)
+	}
+	if err == nil && tag != "" && release.Tag != tag {
+		err = fmt.Errorf("发布源返回的标签与请求不一致")
 	}
 	return release, err
 }
@@ -236,7 +247,7 @@ func (u *cliUpdater) release(ctx context.Context, cached bool) (cliRelease, erro
 			}
 		}
 		requestCtx, cancel := context.WithTimeout(ctx, budget)
-		release, err := u.releaseFrom(requestCtx, source)
+		release, err := u.releaseFrom(requestCtx, source, "")
 		cancel()
 		if err != nil {
 			failures = append(failures, source+": "+err.Error())
@@ -331,28 +342,20 @@ func cliChecksum(data []byte, name string) (string, error) {
 	return checksum, nil
 }
 
-func (u *cliUpdater) download(ctx context.Context, release cliRelease) ([]byte, error) {
-	name, err := u.assetName()
+func (u *cliUpdater) releaseSums(ctx context.Context, release cliRelease) ([]byte, error) {
+	asset, err := release.asset("SHA256SUMS")
 	if err != nil {
 		return nil, err
 	}
+	return u.get(ctx, asset.URL, 64<<10)
+}
+
+func (u *cliUpdater) download(ctx context.Context, release cliRelease, name, expected string) ([]byte, error) {
 	asset, err := release.asset(name)
 	if err != nil {
 		return nil, err
 	}
-	sums, err := release.asset("SHA256SUMS")
-	if err != nil {
-		return nil, err
-	}
-	data, err := u.get(ctx, sums.URL, 64<<10)
-	if err != nil {
-		return nil, err
-	}
-	expected, err := cliChecksum(data, name)
-	if err != nil {
-		return nil, err
-	}
-	data, err = u.get(ctx, asset.URL, maxCLIBytes)
+	data, err := u.get(ctx, asset.URL, maxCLIBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -418,40 +421,60 @@ func (u *cliUpdater) update(ctx context.Context, target string, confirmed bool) 
 	if latest != targetVersion {
 		return nil, fmt.Errorf("最新发布已变为 %s，请重新告知用户并确认", release.Tag)
 	}
-	// 主备源交叉校验：两源都可达时要求 SHA256SUMS 一致，一方被投毒即可被发现。
-	if err := u.crossCheckSums(ctx, release); err != nil {
+	name, err := u.assetName()
+	if err != nil {
 		return nil, err
 	}
-	// API 可达不代表附件 CDN 可达；为另一个源的同版本附件保留下载时间。
+	sumCtx, cancelSums := context.WithTimeout(ctx, 8*time.Second)
+	primarySums, primarySumsErr := u.releaseSums(sumCtx, release)
+	cancelSums()
+
+	fallback := "gitee"
+	if release.Source == "gitee" {
+		fallback = "github"
+	}
+	// 按已确认的标签找镜像。镜像的「最新版本」可能领先或落后，不能用它判断同一发布的摘要。
+	mirrorCtx, cancelMirror := context.WithTimeout(ctx, 8*time.Second)
+	mirror, mirrorErr := u.releaseFrom(mirrorCtx, fallback, release.Tag)
+	var mirrorSums []byte
+	if mirrorErr == nil {
+		mirrorSums, mirrorErr = u.releaseSums(mirrorCtx, mirror)
+	}
+	cancelMirror()
+
+	sums := primarySums
+	if primarySumsErr == nil && mirrorErr == nil && sha256.Sum256(primarySums) != sha256.Sum256(mirrorSums) {
+		return nil, fmt.Errorf("主备发布源同版本 SHA256SUMS 不一致，拒绝更新")
+	}
+	if primarySumsErr != nil {
+		if mirrorErr != nil {
+			return nil, fmt.Errorf("无法读取校验清单：主源 %v；备用源 %v", primarySumsErr, mirrorErr)
+		}
+		sums = mirrorSums
+	}
+	expected, err := cliChecksum(sums, name)
+	if err != nil {
+		return nil, err
+	}
+
+	// 两次下载都使用已经核定的摘要，避免清单在下载时变化。为同标签备用源预留时间。
 	budget := 40 * time.Second
-	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline)/2 < budget {
+	if deadline, ok := ctx.Deadline(); ok && mirror.Source != "" && time.Until(deadline)/2 < budget {
 		budget = time.Until(deadline) / 2
 	}
 	downloadCtx, cancel := context.WithTimeout(ctx, budget)
-	data, err := u.download(downloadCtx, release)
+	data, err := u.download(downloadCtx, release, name, expected)
 	cancel()
 	if err != nil {
+		if mirror.Tag != release.Tag || u.validateRelease(mirror) != nil {
+			return nil, fmt.Errorf("附件下载失败：主源 %w；备用源不可用（%v）", err, mirrorErr)
+		}
 		primaryErr := err
-		fallback := "gitee"
-		if release.Source == "gitee" {
-			fallback = "github"
-		}
-		release, err = u.releaseFrom(ctx, fallback)
-		if err == nil {
-			if latest, _ := cliSemver(release.Tag); latest != targetVersion {
-				err = fmt.Errorf("备用源发布为 %s，与确认版本不同", release.Tag)
-			} else {
-				fbBudget := 40 * time.Second
-				if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < fbBudget {
-					fbBudget = time.Until(deadline)
-				}
-				fbCtx, fbCancel := context.WithTimeout(ctx, fbBudget)
-				data, err = u.download(fbCtx, release)
-				fbCancel()
-			}
-		}
+		fbCtx, fbCancel := context.WithTimeout(ctx, 40*time.Second)
+		data, err = u.download(fbCtx, mirror, name, expected)
+		fbCancel()
 		if err != nil {
-			return nil, fmt.Errorf("附件下载失败：主源 %v；备用源 %v", primaryErr, err)
+			return nil, fmt.Errorf("附件下载失败：主源 %v；备用源 %w", primaryErr, err)
 		}
 	}
 	// 暂存文件必须与目标同目录，Unix 才能通过 rename 原子替换正在使用的文件。
@@ -523,38 +546,6 @@ func (u *cliUpdater) update(ctx context.Context, target string, confirmed bool) 
 	keepBackup = true
 	pruneBackups(filepath.Dir(path), 3)
 	return map[string]any{"updated": true, "installed_version": actual, "previous_version": installed, "backup_path": backupPath, "restart_required": true, "message": "CLI 文件已更新。请重新连接 MCP 或重启客户端；当前连接继续使用旧进程。"}, nil
-}
-
-// crossCheckSums 在主备发布源都可达时要求 SHA256SUMS 内容一致，降低单一发布源被投毒的风险。
-// 若另一源不可达则跳过（无法交叉校验时保持原行为；正式签名校验仍需发布流程配置公钥）。
-func (u *cliUpdater) crossCheckSums(ctx context.Context, release cliRelease) error {
-	other := "gitee"
-	if release.Source == "gitee" {
-		other = "github"
-	}
-	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-	alt, err := u.releaseFrom(cctx, other)
-	if err != nil {
-		return nil
-	}
-	a, err1 := release.asset("SHA256SUMS")
-	b, err2 := alt.asset("SHA256SUMS")
-	if err1 != nil || err2 != nil {
-		return nil
-	}
-	da, err := u.get(cctx, a.URL, 64<<10)
-	if err != nil {
-		return nil
-	}
-	db, err := u.get(cctx, b.URL, 64<<10)
-	if err != nil {
-		return nil
-	}
-	if sha256.Sum256(da) != sha256.Sum256(db) {
-		return fmt.Errorf("主备发布源 SHA256SUMS 不一致，拒绝更新（疑似投毒），请人工核对")
-	}
-	return nil
 }
 
 // pruneBackups 只保留最近 keep 份 .moo-cloud-backup-*，避免升级在安装目录堆积旧二进制。

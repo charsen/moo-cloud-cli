@@ -71,7 +71,13 @@ func runAuditSummaryOnly(cloud, token string, opts auditOptions) int {
 		if opts.mine {
 			args["mine"] = true
 		}
+		if opts.respectScope {
+			args["respect_scope"] = true
+		}
 		data, err := mcpCall(cloud, token, "audit_summary", args)
+		if err == nil && opts.respectScope && data["respect_scope"] != true {
+			err = fmt.Errorf("Cloud 未确认已按个人处理范围汇总")
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s: 取 audit_summary 失败（可能云端未部署该工具）：%v\n", project, err)
 			hasError = true
@@ -174,7 +180,7 @@ func runAudit(args []string) int {
 			Scanned:         map[string]int{},
 		}
 		scanProject(cloud, token, project, opts, now, &report)
-		if len(report.Errors) > 0 {
+		if len(report.Errors) > 0 || len(report.Warnings) > 0 {
 			hasError = true
 		}
 		reports = append(reports, report)
@@ -250,7 +256,7 @@ func scanProject(cloud, token, project string, opts auditOptions, now time.Time,
 	}
 
 	// 云端若支持 audit_summary，顺带取一份汇总概览（失败则跳过，不影响明细）。
-	if summary, ok := tryAuditSummary(cloud, token, project, opts.staleDays, opts.mine); ok {
+	if summary, ok := tryAuditSummary(cloud, token, project, opts.staleDays, opts.mine, opts.respectScope); ok {
 		report.Summary = summary
 	}
 
@@ -313,13 +319,16 @@ func scanProject(cloud, token, project string, opts auditOptions, now time.Time,
 }
 
 // tryAuditSummary 尝试调用云端 audit_summary；旧云端无此工具时静默返回 false。
-func tryAuditSummary(cloud, token, project string, staleDays int, mine bool) (map[string]any, bool) {
+func tryAuditSummary(cloud, token, project string, staleDays int, mine, respectScope bool) (map[string]any, bool) {
 	args := map[string]any{"project": project, "stale_days": staleDays}
 	if mine {
 		args["mine"] = true
 	}
+	if respectScope {
+		args["respect_scope"] = true
+	}
 	data, err := mcpCall(cloud, token, "audit_summary", args)
-	if err != nil {
+	if err != nil || (respectScope && data["respect_scope"] != true) {
 		return nil, false
 	}
 	if _, ok := data["todos"].(map[string]any); !ok {
@@ -351,18 +360,27 @@ func fetchPages(tool string, baseArgs map[string]any, cloud, token string, maxPa
 		if err != nil {
 			return all, false, err
 		}
-		for _, item := range anySlice(data[key]) {
-			if row, ok := item.(map[string]any); ok {
-				all = append(all, row)
-			}
+		rows, valid := data[key].([]any)
+		if !valid {
+			return all, false, fmt.Errorf("服务端分页响应缺少合法 %s 列表（offset=%d）", key, offset)
 		}
-		hasMore, _ := data["has_more"].(bool)
+		for _, item := range rows {
+			row, ok := item.(map[string]any)
+			if !ok {
+				return all, false, fmt.Errorf("服务端分页返回了无效记录（offset=%d）", offset)
+			}
+			all = append(all, row)
+		}
+		hasMore, valid := data["has_more"].(bool)
+		if !valid {
+			return all, false, fmt.Errorf("服务端分页响应缺少合法 has_more（offset=%d）", offset)
+		}
 		if !hasMore {
 			return all, false, nil
 		}
 		next, ok := data["next_offset"].(float64)
-		if !ok || int(next) <= offset {
-			return all, false, nil
+		if !ok || next != float64(int(next)) || int(next) <= offset {
+			return all, false, fmt.Errorf("服务端仍有下一页，但分页游标缺失或无效（offset=%d）", offset)
 		}
 		offset = int(next)
 		// 翻满 maxPages 但仍有更多数据 → 截断。
@@ -557,7 +575,7 @@ func printAuditHelp() {
   --root=<dir>        自动发现 marker 的根目录，默认当前目录
   --types=runtime,slow_query,frontend_error,app_error  只扫指定异常类别（默认全部）
   --stale-days=7      「逾期/长期」阈值天数，默认 7
-  --max-pages=40      每个列表最多翻页数，防异常游标死循环；超限会告警而非静默截断
+  --max-pages=40      每个列表最多翻页数，防异常游标死循环；超限会标记结果不完整并返回 1
   --respect-scope     只看「我在本项目处理范围」内的数据（默认全集，两者是两个维度）
   --mine              待办统计只看我领取/被指派的（异常无 assignee，始终全量）
   --summary           只取云端 audit_summary 汇总，不翻明细（快、省流；需 cloud 已部署）

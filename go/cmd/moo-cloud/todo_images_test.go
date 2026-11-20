@@ -117,8 +117,9 @@ func TestTodoImageBridgeUploadsAndPreservesConfirmation(t *testing.T) {
 		}
 		args := req.Params.Arguments
 		images, _ := args["images"].([]any)
-		if len(images) != 1 || images[0] != expected || args["image_paths"] != nil {
-			t.Error("图片字节未上传或本地路径泄露到远端")
+		if args["image_paths"] != nil || (calls == 1 && len(images) != 0) ||
+			(calls > 1 && (len(images) != 1 || images[0] != expected)) {
+			t.Error("首次预览不能传图，确认后才传图，本地路径始终留在本机")
 		}
 		if args["confirm_token"] == nil {
 			todoImageReply(w, req.ID, map[string]any{"requires_confirmation": true, "confirm_token": "tok"}, false)
@@ -140,8 +141,8 @@ func TestTodoImageBridgeUploadsAndPreservesConfirmation(t *testing.T) {
 			t.Fatalf("图片请求失败，confirmed=%v", confirmed)
 		}
 	}
-	if calls != 2 {
-		t.Fatalf("应只调用预览、确认两次，实际 %d", calls)
+	if calls != 3 {
+		t.Fatalf("应有项目预览、图片预览及确认，实际 %d", calls)
 	}
 }
 
@@ -233,8 +234,9 @@ func TestAddTodoWithImages(t *testing.T) {
 				_ = json.NewDecoder(r.Body).Decode(&req)
 				args := req.Params.Arguments
 				images, _ := args["images"].([]any)
-				if req.Params.Name != "create_todo" || len(images) != 2 || images[0] != expected || images[1] != expected {
-					t.Error("图片未随两阶段请求传入")
+				if req.Params.Name != "create_todo" || (calls == 1 && len(images) != 0) ||
+					(calls > 1 && (len(images) != 2 || images[0] != expected || images[1] != expected)) {
+					t.Error("项目预览不能传图，确认项目后的两次请求需要绑定相同图片")
 				}
 				data := map[string]any{"todo": map[string]any{"id": "T1"}}
 				if args["confirm_token"] == nil {
@@ -255,8 +257,8 @@ func TestAddTodoWithImages(t *testing.T) {
 			if (err == nil) != receipt {
 				t.Fatalf("回执验证错误：%v", err)
 			}
-			if calls != 2 {
-				t.Fatalf("应仅调用两阶段创建，实际 %d", calls)
+			if calls != 3 {
+				t.Fatalf("应有项目预览、图片预览及确认，实际 %d", calls)
 			}
 		})
 	}
