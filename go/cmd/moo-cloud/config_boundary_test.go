@@ -206,3 +206,25 @@ func TestFailedCloudDoesNotBlockValidEnvironmentFetch(t *testing.T) {
 		t.Fatal("failed cloud prevented fetching the verified environment", err)
 	}
 }
+
+func TestCloudMCPRejectsRedirectBeforeForwarding(t *testing.T) {
+	followed := false
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		followed = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer destination.Close()
+	cloud := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, destination.URL, http.StatusTemporaryRedirect)
+	}))
+	defer cloud.Close()
+	if _, err := mcpCall(cloud.URL, "test-only", "list_projects", nil); err == nil {
+		t.Fatal("MCP 请求应拒绝重定向")
+	}
+	if ok, _ := todoImageBridgeCall(t, cloud.URL, todoImageRequest(map[string]any{})); ok {
+		t.Fatal("stdio 桥也应拒绝重定向")
+	}
+	if followed {
+		t.Fatal("请求不应到达重定向目标")
+	}
+}

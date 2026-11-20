@@ -14,10 +14,13 @@ import (
 
 // todoDirectMCP 模拟云端 MCP：签发票据、两阶段 create_todo，并记录收到的参数。
 type todoDirectMCP struct {
-	mu          sync.Mutex
-	ticketCalls int
-	ticketError bool
-	createCalls []map[string]any
+	mu           sync.Mutex
+	ticketCalls  int
+	ticketError  string
+	recovery     bool
+	loseResponse bool
+	receipt      map[string]any
+	createCalls  []map[string]any
 }
 
 func (s *todoDirectMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -36,8 +39,14 @@ func (s *todoDirectMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.ticketCalls++
 		ticketError := s.ticketError
 		s.mu.Unlock()
-		if ticketError {
-			todoDirectToolResult(w, req.ID, map[string]any{"error": "云端不支持图片直传"}, true)
+		if ticketError != "" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]any{
+					"isError": true, "_meta": map[string]string{"code": ticketError},
+					"content": []map[string]string{{"type": "text", "text": "ticket error"}},
+				},
+			})
 			return
 		}
 		files, _ := req.Params.Arguments["files"].([]any)
@@ -55,8 +64,12 @@ func (s *todoDirectMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.createCalls = append(s.createCalls, req.Params.Arguments)
 		s.mu.Unlock()
 		if req.Params.Arguments["confirm_token"] == nil {
+			if s.receipt != nil && req.Params.Arguments["submission_key"] != nil {
+				todoDirectToolResult(w, req.ID, map[string]any{"submission_receipt": s.receipt}, false)
+				return
+			}
 			todoDirectToolResult(w, req.ID, map[string]any{
-				"requires_confirmation": true, "confirm_token": "tok",
+				"requires_confirmation": true, "confirm_token": "tok", "submission_recovery": s.recovery,
 				"project": map[string]any{"slug": "p", "name": "P"},
 			}, false)
 			return
@@ -68,9 +81,13 @@ func (s *todoDirectMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if im, ok := req.Params.Arguments["images"].([]any); ok {
 			n = len(im)
 		}
-		todoDirectToolResult(w, req.ID, map[string]any{
-			"images_attached": n, "images_added": n, "todo": map[string]any{"id": "T1"},
-		}, false)
+		result := map[string]any{"images_attached": n, "images_added": n, "todo": map[string]any{"id": "T1"}}
+		if s.loseResponse {
+			s.receipt = result
+			w.WriteHeader(http.StatusGatewayTimeout)
+			return
+		}
+		todoDirectToolResult(w, req.ID, result, false)
 	default:
 		todoDirectToolResult(w, req.ID, map[string]any{"error": "unknown tool"}, true)
 	}
@@ -166,8 +183,8 @@ func TestQiniuHTTP200ErrorIsRejected(t *testing.T) {
 	if _, err := addTodo(opts); err == nil {
 		t.Fatal("七牛 HTTP 200 + error 必须报错，不能当成功")
 	}
-	if len(mcp.createCalls) != 0 {
-		t.Fatalf("七牛错误后不应创建待办，实际 %d", len(mcp.createCalls))
+	if len(mcp.createCalls) != 1 || mcp.createCalls[0]["confirm_token"] != nil {
+		t.Fatalf("七牛错误后只能有首次项目预览，实际 %v", mcp.createCalls)
 	}
 }
 
@@ -194,10 +211,10 @@ func TestAddTodoDirectUploadsAndSendsUploadIDs(t *testing.T) {
 	if mcp.ticketCalls != 1 {
 		t.Fatalf("票据只应申请一次，实际 %d", mcp.ticketCalls)
 	}
-	if len(mcp.createCalls) != 2 {
-		t.Fatalf("应两阶段调用 create_todo，实际 %d", len(mcp.createCalls))
+	if len(mcp.createCalls) != 3 || mcp.createCalls[0]["images"] != nil || mcp.createCalls[0]["image_upload_ids"] != nil {
+		t.Fatalf("应先无图片预览，再绑定上传票据并确认，实际 %v", mcp.createCalls)
 	}
-	for i, call := range mcp.createCalls {
+	for i, call := range mcp.createCalls[1:] {
 		ids, _ := call["image_upload_ids"].([]any)
 		if len(ids) != 2 {
 			t.Fatalf("第 %d 次 create_todo 应携带 2 个 image_upload_ids，实际 %v", i+1, call["image_upload_ids"])
@@ -206,7 +223,7 @@ func TestAddTodoDirectUploadsAndSendsUploadIDs(t *testing.T) {
 			t.Fatalf("直传路径不应再发送 base64 images")
 		}
 	}
-	if mcp.createCalls[1]["confirm_token"] != "tok" {
+	if mcp.createCalls[2]["confirm_token"] != "tok" {
 		t.Fatal("确认阶段未带 confirm_token")
 	}
 	if qiniu.requested != 2 {
@@ -249,7 +266,7 @@ func TestDirectUploadReportsAlreadyUploadedKeysOnPartialFailure(t *testing.T) {
 func TestAddTodoAutoFallsBackToLegacyWhenTicketsUnavailable(t *testing.T) {
 	t.Setenv("MOO_CLOUD_TODO_IMAGE_MODE", todoImageModeAuto)
 	path, _ := todoTestImage(t)
-	mcp := &todoDirectMCP{ticketError: true}
+	mcp := &todoDirectMCP{ticketError: "todo_direct_upload_unavailable"}
 	qiniu := &qiniuFake{}
 	msrv := todoDirectSetup(t, mcp, qiniu)
 
@@ -262,12 +279,12 @@ func TestAddTodoAutoFallsBackToLegacyWhenTicketsUnavailable(t *testing.T) {
 	if mcp.ticketCalls != 1 {
 		t.Fatalf("应先尝试一次票据，实际 %d", mcp.ticketCalls)
 	}
-	if len(mcp.createCalls) != 2 {
-		t.Fatalf("应两阶段创建，实际 %d", len(mcp.createCalls))
+	if len(mcp.createCalls) != 3 || mcp.createCalls[0]["images"] != nil {
+		t.Fatalf("应先无图片预览，再确认图片，实际 %v", mcp.createCalls)
 	}
-	images, _ := mcp.createCalls[0]["images"].([]any)
-	if len(images) != 1 || mcp.createCalls[0]["image_upload_ids"] != nil {
-		t.Fatalf("回退路径应发送 base64 images，实际 %v", mcp.createCalls[0]["images"])
+	images, _ := mcp.createCalls[1]["images"].([]any)
+	if len(images) != 1 || mcp.createCalls[1]["image_upload_ids"] != nil {
+		t.Fatalf("回退路径应发送 base64 images，实际 %v", mcp.createCalls[1]["images"])
 	}
 	if qiniu.requested != 0 {
 		t.Fatalf("回退后不应直传七牛，实际 %d", qiniu.requested)
@@ -286,12 +303,12 @@ func TestAddTodoDirectUploadFailureIsReportedNotSwallowed(t *testing.T) {
 	if _, err := addTodo(opts); err == nil {
 		t.Fatal("七牛直传失败必须报错，不能当作成功")
 	}
-	if len(mcp.createCalls) != 0 {
-		t.Fatalf("直传失败前不应创建待办，实际 %d", len(mcp.createCalls))
+	if len(mcp.createCalls) != 1 || mcp.createCalls[0]["confirm_token"] != nil {
+		t.Fatalf("直传失败后只能有首次项目预览，实际 %v", mcp.createCalls)
 	}
 }
 
-// 两阶段桥接：预览上传一次，确认复用同一批 upload_id，不重复上传。
+// 两阶段桥接：项目预览不上传，确认后只上传一次。
 func TestTodoImageBridgeDirectReusesUploadAcrossPhases(t *testing.T) {
 	t.Setenv("MOO_CLOUD_TODO_IMAGE_MODE", todoImageModeDirect)
 	path, _ := todoTestImage(t)
@@ -304,7 +321,14 @@ func TestTodoImageBridgeDirectReusesUploadAcrossPhases(t *testing.T) {
 	if ok, _ := todoImageBridgeCall(t, endpoint, todoImageRequest(previewArgs)); !ok {
 		t.Fatal("预览阶段失败")
 	}
-	confirmArgs := map[string]any{"project": "p", "title": "桥直传", "image_paths": []string{path}, "confirm_token": "tok"}
+	if mcp.ticketCalls != 0 || qiniu.requested != 0 {
+		t.Fatal("用户确认前不得申请票据或传输文件")
+	}
+	confirmArgs := map[string]any{"project": "p", "title": "桥直传", "image_paths": []string{path}, "confirm_token": "invalid"}
+	if ok, _ := todoImageBridgeCall(t, endpoint, todoImageRequest(confirmArgs)); ok || mcp.ticketCalls != 0 {
+		t.Fatal("无效确认不得触发上传")
+	}
+	confirmArgs["confirm_token"] = "tok"
 	if ok, _ := todoImageBridgeCall(t, endpoint, todoImageRequest(confirmArgs)); !ok {
 		t.Fatal("确认阶段失败")
 	}
@@ -312,16 +336,55 @@ func TestTodoImageBridgeDirectReusesUploadAcrossPhases(t *testing.T) {
 	if mcp.ticketCalls != 1 || qiniu.requested != 1 {
 		t.Fatalf("应只上传一次：ticket=%d qiniu=%d", mcp.ticketCalls, qiniu.requested)
 	}
-	if len(mcp.createCalls) != 2 {
-		t.Fatalf("应两阶段调用 create_todo，实际 %d", len(mcp.createCalls))
+	if len(mcp.createCalls) != 3 || mcp.createCalls[0]["images"] != nil || mcp.createCalls[0]["image_upload_ids"] != nil {
+		t.Fatalf("应先无图片预览，再绑定上传票据并确认，实际 %v", mcp.createCalls)
 	}
-	for i, call := range mcp.createCalls {
+	for i, call := range mcp.createCalls[1:] {
 		ids, _ := call["image_upload_ids"].([]any)
 		if len(ids) != 1 || ids[0] != "U1" {
 			t.Fatalf("第 %d 次应复用同一 upload_id U1，实际 %v", i+1, call["image_upload_ids"])
 		}
 		if call["images"] != nil {
 			t.Fatalf("直传桥接不应发送 base64 images")
+		}
+	}
+}
+
+func TestAddTodoImageConfirmationAndRecovery(t *testing.T) {
+	t.Setenv("MOO_CLOUD_TODO_IMAGE_MODE", todoImageModeDirect)
+	path, _ := todoTestImage(t)
+	mcp := &todoDirectMCP{recovery: true, loseResponse: true}
+	qiniu := &qiniuFake{}
+	server := todoDirectSetup(t, mcp, qiniu)
+	opts, _ := parseTodoOptions([]string{"--project=p", "--title=回执", "--image=" + path})
+	opts.token, opts.cloud = "test-token", server.URL
+
+	if _, err := addTodo(opts); err == nil || mcp.ticketCalls != 0 || qiniu.requested != 0 {
+		t.Fatalf("未确认前不得传图：%v", err)
+	}
+	opts.yes = true
+	for range 2 {
+		result, err := addTodo(opts)
+		if err != nil || result["todo"].(map[string]any)["id"] != "T1" {
+			t.Fatalf("确认响应丢失后应恢复原回执：%v %v", result, err)
+		}
+	}
+	if mcp.ticketCalls != 1 || qiniu.requested != 1 {
+		t.Fatalf("重试不得上传第二批：票据 %d，直传 %d", mcp.ticketCalls, qiniu.requested)
+	}
+}
+
+func TestAddTodoAutoDoesNotFallbackOnOtherErrors(t *testing.T) {
+	t.Setenv("MOO_CLOUD_TODO_IMAGE_MODE", todoImageModeAuto)
+	path, _ := todoTestImage(t)
+	for _, code := range []string{"forbidden", "invalid_receipt"} {
+		mcp := &todoDirectMCP{ticketError: code}
+		qiniu := &qiniuFake{}
+		server := todoDirectSetup(t, mcp, qiniu)
+		opts, _ := parseTodoOptions([]string{"--project=p", "--title=不回退", "--image=" + path, "--yes"})
+		opts.token, opts.cloud = "test-token", server.URL
+		if _, err := addTodo(opts); err == nil || len(mcp.createCalls) != 1 || qiniu.requested != 0 {
+			t.Fatalf("权限或回执错误不得改传原图：%v", err)
 		}
 	}
 }

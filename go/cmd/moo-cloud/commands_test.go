@@ -265,6 +265,23 @@ func TestFetchPagesReportsTruncation(t *testing.T) {
 	}
 }
 
+func TestAuditFailsOnIncompleteScan(t *testing.T) {
+	for name, next := range map[string]any{"truncated": 1, "missing": nil, "stalled": 0, "fractional": 1.5} {
+		t.Run(name, func(t *testing.T) {
+			server := mcpStub(t, func(tool string, args map[string]any) map[string]any {
+				if tool == "list_todos" {
+					return map[string]any{"todos": []any{}, "has_more": true, "next_offset": next}
+				}
+				return map[string]any{"issues": []any{}, "has_more": false}
+			})
+			defer server.Close()
+			if code := runAudit([]string{"--cloud=" + server.URL, "--token=fixture", "--project=p", "--max-pages=1", "--fail-on-findings", "--json"}); code != 1 {
+				t.Fatalf("扫描不完整应退出 1，实际 %d", code)
+			}
+		})
+	}
+}
+
 func TestAutoProjectSlugs(t *testing.T) {
 	dir := t.TempDir()
 	// 后端仓库：从 deployments 取 project

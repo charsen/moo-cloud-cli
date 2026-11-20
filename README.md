@@ -484,7 +484,7 @@ moo-cloud todo add --batch=report.json --yes
 - 同项目、同标题且未完成（`open` / `in_progress`）时复用已有待办，返回 `deduped: true`；带图时追加新图，相同图片不重复保存
 - 支持 PNG/JPEG/WebP/GIF，最多 5 张图片（含已有图片），每张原始文件不超过 8 MiB（像素上限由云端校验）；图片保存在 cloud 的私有附件区
 - 图片无效或保存失败会报错，并回滚本次创建或补图；返回 `images_attached`（已处理的输入张数，含重复）、`images_added`（实际新增张数）和 `todo.attachments_count`
-- CLI 收不到完整图片保存回执时会报错；若错误带有待办 ID，先检查该记录附件，重试请保留相同标题与图片
+- CLI 收不到完整直传回执时会先查询 Cloud。若结果仍未确定，请在 24 小时内用相同账号令牌、参数和图片重试。已完成的提交会返回原回执
 - 新待办默认 `ai_policy=auto`；`--assignee` 可填 `me`（默认）或项目成员邮箱
 - 免费项目待办配额满时拒绝新建，不会淘汰已有待办；相同标题的未完成待办仍可复用
 - `--from-issue` 支持 `runtime` / `slow_query` / `frontend_error` / `app_error`
@@ -500,9 +500,9 @@ Agent 通过本地 MCP 桥创建待办时，用 `image_paths` 传入截图的**�
 }
 ```
 
-首次调用返回项目预览与 `confirm_token`；确认后第二次调用保留相同参数和图片，再加上该令牌。默认走直传：CLI 先申请 `create_todo_image_tickets` 票据，把文件 multipart 直传七牛，再把 `upload_id` 放进 `image_upload_ids`；旧 `images` 数组 base64 仅在 `MOO_CLOUD_TODO_IMAGE_MODE=legacy` 时兼容（`auto` 也会在直传不可用时回退）。
+首次调用返回项目预览与 `confirm_token`；确认后第二次调用保留相同参数和图片，再加上该令牌。确认项目后才上传。默认走直传：CLI 先申请 `create_todo_image_tickets` 票据，把文件 multipart 直传七牛，再把 `upload_id` 放进 `image_upload_ids`；旧 `images` 数组 base64 仅在 `MOO_CLOUD_TODO_IMAGE_MODE=legacy` 时兼容（`auto` 也会在直传不可用时回退）。
 
-图片上传模式由 `MOO_CLOUD_TODO_IMAGE_MODE` 控制：默认 `direct`（只直传，失败直接报错）；`auto` 仅在云端不支持/未配置七牛时回退旧 base64；`legacy` 仅用于兼容旧 cloud。生产 cloud 已关闭旧通道，建议所有客户端保持默认 `direct`。
+图片上传模式由 `MOO_CLOUD_TODO_IMAGE_MODE` 控制：默认 `direct`（只直传，失败直接报错）；`auto` 仅在云端明确声明直传不可用且旧通道已开启时回退 base64；`legacy` 仅用于兼容旧 cloud。生产 cloud 已关闭旧通道，建议所有客户端保持默认 `direct`。
 
 聊天附件不会自动进入工具参数。Agent 应把用户附图一起传入；如果客户端未提供可读的原图文件，应明确说明图片尚未上传。需要同时使用支持附图的 cloud 和 CLI，更新后重新连接 MCP 才会刷新工具参数。
 
@@ -617,7 +617,7 @@ moo-cloud audit --project=my-project --summary   # 只取云端汇总，不翻�
 
 - **免填 slug**：`audit`/`todo list` 省略 `--project` 时会从 `--root`（默认当前目录）及下两层的 `.moo-cloud.json` 自动取项目。
 - **CI 门禁**：加 `--fail-on-findings`，发现违规时退出码为 2（区别于参数/网络错误的 1）。
-- **截断告警**：命中 `--max-pages` 上限会显式提示「可能不完整」，不静默截断。
+- **扫描完整性**：命中 `--max-pages` 上限或收到无效游标时会标记报告不完整，退出码为 1。
 - **降本**：对支持新接口的 cloud，done 扫描走 `missing_note` 过滤、并可用 `audit_summary` 取汇总（旧 cloud 自动回退，不影响使用）。
 
 CI / 定时示例（发现违规即失败）：
@@ -726,7 +726,7 @@ token 失效、被吊销或过期；重新生成。`--cloud` 指向的实例也�
 - 个人 MCP token 只读文件/环境变量；cloud 侧只存哈希
 - 不要把 token 提交进仓库、贴到聊天或日志
 - `--cloud`/`MOO_CLOUD_URL` 必须使用 **https**（仅 localhost 允许 http），避免 token 明文出网
-- 自更新校验下载文件 SHA-256，且主备发布源 `SHA256SUMS` 需一致；正式签名（公钥）校验需在发布流程额外配置（待办）
+- 自更新核对同标签的 `SHA256SUMS`。双源清单均可读时，两者必须一致。主备下载复用同一个已核定的 SHA-256。正式签名（公钥）校验仍是发布流程待办
 - 写操作在服务端校验范围与策略，范围外返回 403
 
 ---

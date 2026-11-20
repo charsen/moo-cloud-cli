@@ -62,7 +62,7 @@ func newUpdateFixture(t *testing.T) *updateFixture {
 		status := 200
 		var data []byte
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/releases/latest"):
+		case strings.HasSuffix(r.URL.Path, "/releases/latest"), strings.HasSuffix(r.URL.Path, "/releases/tags/"+f.version):
 			source := "github"
 			if r.URL.Host == "gitee.com" {
 				source = "gitee"
@@ -328,6 +328,34 @@ func TestCLIUpdateAttachmentFallback(t *testing.T) {
 	}
 }
 
+func TestCLIUpdatePinsChecksumAcrossMirrorFallback(t *testing.T) {
+	f := newUpdateFixture(t)
+	original := f.u.client.Transport
+	sumsReads := 0
+	changed := []byte("different binary")
+	f.u.client.Transport = updateTransport(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "gitee.com" && strings.HasSuffix(r.URL.Path, "/releases/latest") {
+			t.Error("备用源应按已确认版本查询")
+		}
+		if strings.HasSuffix(r.URL.Path, "/SHA256SUMS") {
+			sumsReads++
+		}
+		if r.URL.Host == "github.com" && strings.HasSuffix(r.URL.Path, "/moo-cloud-darwin-arm64") {
+			return nil, fmt.Errorf("主源附件 CDN 不可用")
+		}
+		if r.URL.Host == "gitee.com" && strings.HasSuffix(r.URL.Path, "/moo-cloud-darwin-arm64") {
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(changed)), Header: http.Header{}}, nil
+		}
+		return original.RoundTrip(r)
+	})
+	if _, err := f.u.update(context.Background(), "0.1.2", true); err == nil {
+		t.Fatal("备用源产物仍须匹配同标签核定的摘要")
+	}
+	if sumsReads != 2 || string(mustRead(t, f.path)) != "0.1.1" {
+		t.Fatalf("下载阶段不得重读清单或更换安装文件，读取清单 %d 次", sumsReads)
+	}
+}
+
 func TestCLIUpdateDoesNotOverwriteConcurrentInstallation(t *testing.T) {
 	f := newUpdateFixture(t)
 	original := f.u.binaryVersion
@@ -460,7 +488,15 @@ func TestCLIGiteeUnknownSizeStillRejectsEmptyAndCorruptDownloads(t *testing.T) {
 			if err != nil {
 				t.Fatalf("缺少元数据大小不应阻断发布发现：%v", err)
 			}
-			if _, err := f.u.download(context.Background(), release); err == nil {
+			name, err := f.u.assetName()
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected, err := cliChecksum(f.checksum, name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.u.download(context.Background(), release, name, expected); err == nil {
 				t.Fatal("缺少大小不允许下载空文件或绕过 SHA-256")
 			}
 			if string(mustRead(t, f.path)) != "0.1.1" {

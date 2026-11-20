@@ -174,15 +174,22 @@ func handleMcpLine(endpoint, token, line string, writer *bufio.Writer, updater *
 	}
 
 	requestedImages := 0
-	// 直传两阶段状态：预览阶段上传并把 upload_ids 记在本地缓存，确认阶段复用，避免重复上传。
-	todoStateKey := ""
-	todoStateDirect := false
 	hadConfirmToken := false
+	timeout := 120 * time.Second
 	if method == "tools/call" && params.Name == "create_todo" {
 		var args map[string]json.RawMessage
 		_ = json.Unmarshal(params.Arguments, &args)
 		paths, hasPaths := args["image_paths"]
 		_, hasImages := args["images"]
+		_, hasUploads := args["image_upload_ids"]
+		hadConfirmToken = len(args["confirm_token"]) > 0 && string(args["confirm_token"]) != "null"
+		if hadConfirmToken && hasUploads {
+			timeout = todoCommitTimeout
+			var ids []string
+			if json.Unmarshal(args["image_upload_ids"], &ids) == nil {
+				requestedImages = len(ids)
+			}
+		}
 		if hasPaths || hasImages {
 			// 本机读文件同样要求合法的请求与响应 id；通知不得触发本机 I/O。
 			if !hasID {
@@ -200,8 +207,8 @@ func handleMcpLine(endpoint, token, line string, writer *bufio.Writer, updater *
 					"error": map[string]any{"code": -32600, "message": "非法的图片工具请求"}})
 				return false, "非法的图片工具请求"
 			}
-			if hasPaths && hasImages {
-				return writeTodoImageError(writer, rawID, fmt.Errorf("image_paths 与 images 只能选择一种"))
+			if hasPaths && (hasImages || hasUploads) {
+				return writeTodoImageError(writer, rawID, fmt.Errorf("image_paths、images 与 image_upload_ids 只能选择一种"))
 			}
 			if hasPaths {
 				var filenames []string
@@ -212,39 +219,24 @@ func handleMcpLine(endpoint, token, line string, writer *bufio.Writer, updater *
 				if err != nil {
 					return writeTodoImageError(writer, rawID, err)
 				}
-				requestedImages = len(files)
-				todoStateKey = todoImageStateKey(args, files)
-				hadConfirmToken = len(args["confirm_token"]) > 0 && string(args["confirm_token"]) != "null"
-				var projectSlug string
-				_ = json.Unmarshal(args["project"], &projectSlug)
-
-				state, ok := getTodoDirectState(todoStateKey)
-				if !ok {
-					// 确认阶段找不到预览结果，说明本机桥重启或丢失缓存；重新上传会得到不同
-					// upload_id，导致云端确认令牌对不上，因此明确要求重新预览，而不是悄悄换图。
-					if hadConfirmToken {
-						return writeTodoImageError(writer, rawID, fmt.Errorf("本地桥未找到预览阶段的直传结果，请重新发起 create_todo（重新预览）"))
-					}
-					state, err = chooseTodoImageState(endpoint, token, projectSlug, files)
-					if err != nil {
-						return writeTodoImageError(writer, rawID, err)
-					}
-					putTodoDirectState(todoStateKey, state)
-				}
-
 				delete(args, "image_paths")
-				if state.mode == todoImageModeDirect {
-					args["image_upload_ids"], _ = json.Marshal(state.uploadIDs)
-					todoStateDirect = true
-				} else {
-					args["images"], _ = json.Marshal(todoImagesBase64(files))
+				var cloudArgs map[string]any
+				encoded, _ := json.Marshal(args)
+				_ = json.Unmarshal(encoded, &cloudArgs)
+				if confirm := cloudArgs["confirm_token"]; confirm != nil {
+					if value, ok := confirm.(string); !ok || value == "" {
+						return writeTodoImageError(writer, rawID, fmt.Errorf("confirm_token 格式错误"))
+					}
 				}
-				var rawParams map[string]json.RawMessage
-				_ = json.Unmarshal(msg["params"], &rawParams)
-				rawParams["arguments"], _ = json.Marshal(args)
-				msg["params"], _ = json.Marshal(rawParams)
-				encoded, _ := json.Marshal(msg)
-				line = string(encoded)
+				data, err := bridgeTodoImageCall(strings.TrimSuffix(endpoint, "/api/v1/mcp"), token, cloudArgs, files, rawID)
+				if err != nil {
+					return writeTodoImageError(writer, rawID, err)
+				}
+				text, _ := json.Marshal(data)
+				writeRaw(writer, map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(rawID), "result": map[string]any{
+					"content": []map[string]any{{"type": "text", "text": string(text)}}, "isError": false,
+				}})
+				return true, ""
 			} else {
 				// 客户端已直接给 images base64：按旧路径透传。
 				var images []string
@@ -255,7 +247,7 @@ func handleMcpLine(endpoint, token, line string, writer *bufio.Writer, updater *
 		}
 	}
 
-	body, err := forwardMcp(endpoint, token, line)
+	body, err := forwardMcp(endpoint, token, line, timeout)
 	if err != nil {
 		if hasID {
 			writeRaw(writer, map[string]any{
@@ -358,18 +350,11 @@ func handleMcpLine(endpoint, token, line string, writer *bufio.Writer, updater *
 			if len(result.Content) > 0 {
 				_ = json.Unmarshal([]byte(result.Content[0].Text), &data)
 			}
-			if err := verifyTodoImages(data, requestedImages); err != nil {
-				return writeTodoImageError(writer, rawID, err)
+			if hadConfirmToken || data["requires_confirmation"] != true {
+				if err := verifyTodoImages(data, requestedImages); err != nil {
+					return writeTodoImageError(writer, rawID, err)
+				}
 			}
-		}
-	}
-
-	if todoStateDirect && hadConfirmToken && !hasError {
-		var confirmed struct {
-			IsError bool `json:"isError"`
-		}
-		if json.Unmarshal(response["result"], &confirmed) == nil && !confirmed.IsError {
-			deleteTodoDirectState(todoStateKey)
 		}
 	}
 
@@ -422,7 +407,7 @@ func appendMcpLog(path, line string, ok bool, errMsg string, durationMs int64) {
 	appendJSONLine(path, entry)
 }
 
-func forwardMcp(endpoint, token, body string) ([]byte, error) {
+func forwardMcp(endpoint, token, body string, timeout time.Duration) ([]byte, error) {
 	req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -431,7 +416,7 @@ func forwardMcp(endpoint, token, body string) ([]byte, error) {
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	client := fixedEndpointClient(timeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("云端不可达：%w", err)
