@@ -28,6 +28,22 @@ CLI 更新源为 GitHub Release，访问失败时尝试 Gitee。附图功能还�
 - 测试用例数随迭代增长（0.1.4 时期为 85 项）；请以本机 `go test ./...` 实际结果为准，历史构建记录中的数字仅代表当次发布。当前 CLI 顶层测试通过、含 race 检查；WorkBuddy 隔离项目完成 63 次实际工具调用，正式更新检查连续两次复测通过。详细范围及历史构建记录见下文。
 - 2026-11-12 发布时未执行真实 Agent 聊天附图上传；2026-11-13 已补充 WorkBuddy 桌面本地隔离验收，见下文。本次仍未部署 cloud，不能将源码发布或本地验收视为线上功能已生效。
 
+## 最近构建 · 0.1.10（2026-11-20）
+
+源码提交为 `dcd6aac`。Go 1.27.4，`CGO_ENABLED=0`，构建命令为 `make -C go dist VERSION=0.1.10`。六个平台均回读确认源码提交、`vcs.modified=false`、系统和架构。构建后补录发布文档，发布标签包含这些文档。
+
+| 文件（位于 `dist/`） | 字节大小 | SHA-256 |
+| --- | ---: | --- |
+| `moo-cloud-darwin-amd64` | 7683792 | `673617bba80acaf5c67d26fff0f0591844f118992b28a87fcb7c3a05c344de1a` |
+| `moo-cloud-darwin-arm64` | 7095362 | `671ad4cfd86d933d780a38342c6eeb4348ba78473365fe7519f377957e401ae0` |
+| `moo-cloud-linux-amd64` | 7536800 | `e585446216c45d99dd028e970fd6899bace03f0903f2a1de134b4cabbf2213b4` |
+| `moo-cloud-linux-arm64` | 6946976 | `6e1d49e1541475bf4f7c844a8a467d67d1ef06a8c18a7f7d72ffc25d67b9a140` |
+| `moo-cloud-windows-amd64.exe` | 7755264 | `1f26d8abc95712209d84f0bde651301e2d97b731748bd43e858c31cb62e90233` |
+| `moo-cloud-windows-arm64.exe` | 7019008 | `5a60a13bf0ec6876f03f38dd6194ad4cb21232b840a5ecd4186d91e25dcc3a73` |
+
+- 六个二进制均通过 `SHA256SUMS` 校验。macOS arm64 运行 `--version` 返回 `moo-cloud 0.1.10`，Go 链接器 ad-hoc 签名校验通过。未做 Developer ID 签名或公证，其余平台完成交叉构建和格式验证。
+- 直传回执恢复、按个人范围汇总和详情认领人需要部署包含对应 MCP 契约的 Cloud 服务端。更新 CLI 后重新连接正在运行的 MCP 客户端。
+
 ## 最近构建 · 0.1.9（2026-11-18）
 
 源码提交：`3736405`（干净工作区，六个平台均为 `vcs.modified=false`）；Go 1.27.4，`CGO_ENABLED=0`，`make -C go dist VERSION=0.1.9`。本页构建记录在构建之后单独提交（仅文档变化），标签指向含本记录的提交。
